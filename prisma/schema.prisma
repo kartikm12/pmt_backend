@@ -1,0 +1,285 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  MANAGER
+  TEAM_MEMBER
+  DEVELOPER
+  DESIGNER
+  TESTER
+  SUPPORT_ENGINEER
+  BUSINESS_ANALYST
+  PROJECT_MANAGER
+  ADMIN
+}
+
+enum MembershipRole {
+  OWNER
+  MANAGER
+  CONTRIBUTOR
+  VIEWER
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  OFFLINE
+  SUSPENDED
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  REVIEW
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ActivityAction {
+  USER_REGISTERED
+  USER_LOGGED_IN
+  PROJECT_CREATED
+  PROJECT_UPDATED
+  PROJECT_ARCHIVED
+  PROJECT_MEMBER_ADDED
+  PROJECT_MEMBER_REMOVED
+  TASK_CREATED
+  TASK_UPDATED
+  TASK_DELETED
+  TASK_STATUS_CHANGED
+  TASK_ASSIGNED
+  COMMENT_ADDED
+  TEAM_MEMBER_INVITED
+  TEAM_MEMBER_REMOVED
+  PROFILE_UPDATED
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_DUE_SOON
+  TASK_OVERDUE
+  PROJECT_UPDATED
+  TEAM_INVITE
+  COMMENT_MENTION
+  SYSTEM
+}
+
+model User {
+  id              String          @id @default(cuid())
+  email           String          @unique
+  passwordHash    String
+  fullName        String
+  avatarUrl       String?
+  bio             String?
+  phone           String?
+  title           String?
+  role            UserRole        @default(TEAM_MEMBER)
+  roleLocked      Boolean         @default(true)
+  status          UserStatus      @default(ACTIVE)
+  lastLoginAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  deletedAt       DateTime?
+  managedProjects Project[]       @relation("ProjectManager")
+  assignedTasks   Task[]          @relation("TaskAssignees")
+  createdTasks    Task[]          @relation("TaskCreator")
+  comments        TaskComment[]
+  memberships     ProjectMember[]
+  attachments     Attachment[]
+  activityLogs    ActivityLog[]
+  notifications   Notification[]
+  sessions        UserSession[]
+  createdProjects Project[]       @relation("ProjectCreator")
+
+  @@index([role, deletedAt])
+  @@index([status, deletedAt])
+}
+
+model UserSession {
+  id            String   @id
+  userId        String
+  userAgent     String?
+  deviceInfo    String?
+  ipAddress     String?
+  isActive      Boolean  @default(true)
+  revokedAt     DateTime?
+  revokedReason String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  expiresAt     DateTime
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([expiresAt])
+}
+
+model Project {
+  id            String         @id
+  name          String
+  slug          String         @unique
+  description   String?
+  status        ProjectStatus  @default(PLANNING)
+  startDate     DateTime?
+  dueDate       DateTime?
+  completedAt   DateTime?
+  managerId     String
+  createdById   String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  deletedAt     DateTime?
+  manager       User           @relation("ProjectManager", fields: [managerId], references: [id])
+  createdBy     User           @relation("ProjectCreator", fields: [createdById], references: [id])
+  tasks         Task[]
+  members       ProjectMember[]
+  attachments   Attachment[]
+  activityLogs  ActivityLog[]
+  notifications Notification[]
+
+  @@index([status, deletedAt])
+  @@index([managerId, deletedAt])
+  @@index([createdById])
+  @@index([dueDate])
+}
+
+model ProjectMember {
+  id        String         @id @default(cuid())
+  projectId String
+  userId    String
+  role      MembershipRole @default(CONTRIBUTOR)
+  joinedAt  DateTime       @default(now())
+  removedAt DateTime?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  project   Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId, removedAt])
+  @@index([projectId, removedAt])
+}
+
+model Task {
+  id            String       @id
+  title         String
+  description   String?
+  status        TaskStatus   @default(TODO)
+  priority      TaskPriority @default(MEDIUM)
+  dueDate       DateTime?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  sortOrder     Int          @default(0)
+  projectId     String
+  createdById   String
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  deletedAt     DateTime?
+  project       Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignees     User[]       @relation("TaskAssignees")
+  createdBy     User         @relation("TaskCreator", fields: [createdById], references: [id])
+  comments      TaskComment[]
+  attachments   Attachment[]
+  activityLogs  ActivityLog[]
+  notifications Notification[]
+
+  @@index([projectId, status, deletedAt])
+  @@index([dueDate, deletedAt])
+  @@index([priority, status])
+}
+
+model TaskComment {
+  id        String   @id @default(cuid())
+  taskId    String
+  userId    String
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, deletedAt])
+  @@index([userId, deletedAt])
+}
+
+model ActivityLog {
+  id          String    @id @default(cuid())
+  action      ActivityAction
+  entityType  String
+  entityId    String
+  description String
+  metadata    Json?
+  userId      String?
+  projectId   String?
+  taskId      String?
+  createdAt   DateTime  @default(now())
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  project     Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task        Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([taskId, createdAt])
+  @@index([userId, createdAt])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  projectId String?
+  taskId    String?
+  type      NotificationType
+  title     String
+  message   String
+  isRead    Boolean          @default(false)
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project   Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task      Task?            @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([userId, isRead, createdAt])
+  @@index([projectId, createdAt])
+  @@index([taskId, createdAt])
+}
+
+model Attachment {
+  id        String   @id @default(cuid())
+  name      String
+  url       String
+  fileType  String
+  fileSize  Int
+  projectId String?
+  taskId    String?
+  userId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task      Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@index([taskId, createdAt])
+  @@index([userId, createdAt])
+}

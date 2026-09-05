@@ -1,0 +1,14 @@
+import { Router } from "express";
+import { UserController } from "../controllers/user.controller.js";
+import { authenticate } from "../middleware/authenticate.js";
+import { validate } from "../middleware/validate.js";
+import { asyncHandler } from "../utils/asyncHandler.js";
+import { upload } from "../utils/multer.js";
+import { updateMeSchema, updatePasswordSchema } from "../validators/user.validator.js";
+
+export const userRouter = Router();
+
+userRouter.use(authenticate);
+userRouter.put("/me", validate(updateMeSchema), asyncHandler(UserController.updateMe));
+userRouter.post("/me/avatar", upload.single("avatar"), asyncHandler(UserController.uploadAvatar));
+userRouter.put("/me/password", validate(updatePasswordSchema), asyncHandler(UserController.updatePassword));

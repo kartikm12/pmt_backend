@@ -1,0 +1,17 @@
+[2026-09-05T17:43:08.825Z] ERROR: PrismaClientKnownRequestError: 
+Invalid `prisma.user.findFirst()` invocation in
+D:\entro-labs---it-solutions\backend\src\services\auth.service.ts:72:36
+
+  69 static async login(input: { email: string; password: string }, metadata?: { userAgent?: string; ipAddress?: string }) {
+  70   const normalizedEmail = input.email.toLowerCase();
+  71 
+→ 72   const user = await prisma.user.findFirst(
+Can't reach database server at `aws-0-eu-west-2.pooler.supabase.com:6543`
+
+Please make sure your database server is running at `aws-0-eu-west-2.pooler.supabase.com:6543`.
+    at ei.handleRequestError (D:\entro-labs---it-solutions\node_modules\@prisma\client\src\runtime\RequestHandler.ts:228:13)
+    at ei.handleAndLogRequestError (D:\entro-labs---it-solutions\node_modules\@prisma\client\src\runtime\RequestHandler.ts:174:12)
+    at ei.request (D:\entro-labs---it-solutions\node_modules\@prisma\client\src\runtime\RequestHandler.ts:143:12)
+    at async a (D:\entro-labs---it-solutions\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:833:24)
+    at async AuthService.login (D:\entro-labs---it-solutions\backend\src\services\auth.service.ts:72:18)
+    at async login (D:\entro-labs---it-solutions\backend\src\controllers\auth.controller.ts:14:20)
