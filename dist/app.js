@@ -51,10 +51,12 @@ app.get("/health", (_req, res) => {
     res.status(200).json({ status: "ok" });
 });
 app.use("/api", globalRateLimiter, apiRouter);
-// Serve the frontend in production
-app.use(express.static(distDir));
-app.get("*", (req, res) => {
-    res.sendFile(path.join(distDir, "index.html"));
-});
+// Only serve the frontend locally (in production, frontend is on Vercel)
+if (env.NODE_ENV !== "production") {
+    app.use(express.static(distDir));
+    app.get("*", (req, res) => {
+        res.sendFile(path.join(distDir, "index.html"));
+    });
+}
 app.use(notFound);
 app.use(errorHandler);
