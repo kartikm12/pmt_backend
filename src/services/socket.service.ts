@@ -25,7 +25,21 @@ export class SocketService {
   public async init(httpServer: HttpServer) {
     this.io = new Server(httpServer, {
       cors: {
-        origin: env.CLIENT_URL,
+        origin: (origin, callback) => {
+          if (!origin) return callback(null, true); // Allow non-browser clients
+          const allowed =
+            !origin ||
+            origin === env.CLIENT_URL ||
+            origin.endsWith(".vercel.app") ||
+            origin.endsWith(".render.com") ||
+            origin.startsWith("http://localhost") ||
+            origin.startsWith("http://127.0.0.1");
+          if (allowed) {
+            callback(null, true);
+          } else {
+            callback(new Error("Not allowed by Socket CORS"));
+          }
+        },
         methods: ["GET", "POST"],
         credentials: true
       }
