@@ -55,8 +55,14 @@ const distDir = path.join(__dirname, "../../../frontend/dist");
 
 app.use("/uploads", express.static(uploadsDir));
 
-app.get("/health", (_req, res) => {
-  res.status(200).json({ status: "ok" });
+app.get("/health", async (_req, res) => {
+  try {
+    const { prisma } = await import("./prisma/client.js");
+    await prisma.$queryRaw`SELECT 1`;
+    res.status(200).json({ status: "ok", db: "connected", timestamp: new Date().toISOString() });
+  } catch {
+    res.status(503).json({ status: "error", db: "unreachable", timestamp: new Date().toISOString() });
+  }
 });
 
 app.use("/api", globalRateLimiter, apiRouter);
