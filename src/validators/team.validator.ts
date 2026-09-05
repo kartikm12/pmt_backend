@@ -7,6 +7,6 @@ export const inviteTeamMemberSchema = z.object({
   password: z.string().min(8).max(128),
   role: z.nativeEnum(USER_ROLE).optional(),
   title: z.string().max(120).optional(),
-  projectId: z.string().cuid().optional(),
+  projectId: z.string().min(1).optional(),
   membershipRole: z.nativeEnum(MEMBERSHIP_ROLE).optional()
 });
