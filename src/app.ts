@@ -18,8 +18,21 @@ app.use(
       if (env.NODE_ENV === "development" || !origin) {
         callback(null, true);
       } else {
-        const allowed = [env.CLIENT_URL, "http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173"];
-        if (allowed.includes(origin) || origin.match(/^http:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/) || origin.endsWith(".trycloudflare.com")) {
+        const allowedList = [
+          env.CLIENT_URL,
+          "http://localhost:3000",
+          "http://127.0.0.1:3000",
+          "http://localhost:5173",
+          "http://127.0.0.1:5173"
+        ].filter(Boolean);
+
+        const isAllowed =
+          allowedList.includes(origin) ||
+          origin.endsWith(".vercel.app") ||
+          origin.endsWith(".render.com") ||
+          origin.match(/^http:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/);
+
+        if (isAllowed) {
           callback(null, true);
         } else {
           console.error(`[CORS_ERROR] Origin ${origin} is not allowed by policy`);
