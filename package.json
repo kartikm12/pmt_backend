@@ -7,7 +7,8 @@
     "build": "prisma generate && tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
-    "prisma:push": "prisma db push"
+    "prisma:push": "prisma db push",
+    "make-admin": "tsx src/scripts/make-admin.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
