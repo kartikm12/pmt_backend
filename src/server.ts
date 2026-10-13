@@ -4,6 +4,7 @@ import { env } from "./config/env.js";
 import { prisma } from "./prisma/client.js";
 import { socketService } from "./services/socket.service.js";
 import { ReminderService } from "./services/reminder.service.js";
+import { MailService } from "./mail/mail.service.js";
 
 async function bootstrap() {
   try {
@@ -26,6 +27,7 @@ async function bootstrap() {
 
     httpServer.listen(env.PORT, "0.0.0.0", () => {
       console.log(`API + WebSocket server running on http://0.0.0.0:${env.PORT}`);
+      MailService.logStatus();
     });
 
     // Background session cleanup task
