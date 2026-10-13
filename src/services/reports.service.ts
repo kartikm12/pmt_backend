@@ -1,6 +1,6 @@
 import { prisma } from "../prisma/client.js";
 import { PROJECT_STATUS, TASK_STATUS } from "../constants/enums.js";
-import { startOfDay, startOfToday, subDays, format } from "date-fns";
+import { addDays, differenceInCalendarDays, endOfDay, startOfDay, startOfToday, subDays, format } from "date-fns";
 
 const MANAGER_ROLES = ["ADMIN", "MANAGER", "PROJECT_MANAGER"];
 
@@ -42,13 +42,17 @@ export class ReportsService {
       const date = subDays(new Date(), (daysCount - 1) - i);
       return {
         start: startOfDay(date),
-        end: new Date(date.getTime() + (24 * 60 * 60 * 1000) - 1),
+        // Whole calendar days: "now + 24 h" overlapped the next day and counted tasks twice
+        end: endOfDay(date),
         label: daysCount > 7 ? format(date, "MMM d") : format(date, "EEE")
       };
     });
 
     const startRange = days[0].start;
     const endRange = days[days.length - 1].end;
+    // The same length of time just before, for "vs previous period"
+    const prevStart = subDays(startRange, daysCount);
+    const today = startOfToday();
 
     // All independent reads go out together (Prisma queries start when awaited): each sequential
     // database trip costs ~160 ms on the live hosting
@@ -62,17 +66,18 @@ export class ReportsService {
       activeProjectCount,
       totalCompletedTasks,
       totalPendingTasks,
-      totalOverdueTasks
+      totalOverdueTasks,
+      overdueByProject
     ] = await Promise.all([
       prisma.task.findMany({
         where: {
           ...taskBaseWhere,
           OR: [
-            { createdAt: { gte: startRange, lte: endRange } },
-            { completedAt: { gte: startRange, lte: endRange } }
+            { createdAt: { gte: prevStart, lte: endRange } },
+            { completedAt: { gte: prevStart, lte: endRange } }
           ]
         },
-        select: { status: true, createdAt: true, completedAt: true }
+        select: { status: true, createdAt: true, completedAt: true, dueDate: true }
       }),
       prisma.task.groupBy({
         by: ["status"],
@@ -92,7 +97,8 @@ export class ReportsService {
           dueDate: { lt: startOfToday() }
         },
         include: {
-          assignees: { select: { fullName: true, avatarUrl: true } }
+          assignees: { select: { fullName: true, avatarUrl: true } },
+          project: { select: { id: true, name: true } }
         },
         orderBy: { dueDate: 'asc' },
         take: 10
@@ -116,6 +122,11 @@ export class ReportsService {
       prisma.task.count({ where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE } } }),
       prisma.task.count({
         where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } }
+      }),
+      prisma.task.groupBy({
+        by: ["projectId"],
+        where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } },
+        _count: true
       })
     ]);
 
@@ -134,6 +145,27 @@ export class ReportsService {
       };
     });
 
+    // Headline numbers: this period against the same length of time just before
+    const inWindow = (d: Date | null, from: Date, to: Date) => !!d && d >= from && d <= to;
+    // Deadlines are whole days: finishing any time on the due day counts as on time
+    const onTime = (t: { completedAt: Date | null; dueDate: Date | null }) => !!t.completedAt && !!t.dueDate && t.completedAt < addDays(startOfDay(t.dueDate), 1);
+    const periodNumbers = (from: Date, to: Date) => {
+      const done = tasksInRange.filter((t) => t.status === TASK_STATUS.DONE && inWindow(t.completedAt, from, to));
+      const withDeadline = done.filter((t) => t.dueDate);
+      return {
+        completed: done.length,
+        created: tasksInRange.filter((t) => inWindow(t.createdAt, from, to)).length,
+        onTimeRate: withDeadline.length ? Math.round((withDeadline.filter(onTime).length / withDeadline.length) * 100) : null
+      };
+    };
+    const summary = {
+      days: daysCount,
+      current: periodNumbers(startRange, endRange),
+      previous: periodNumbers(prevStart, new Date(startRange.getTime() - 1)),
+      overdueNow: totalOverdueTasks,
+      overdueProjects: overdueByProject.length
+    };
+
     // 2. Tasks by Status
 
     const statusData = statusCounts.map((item) => ({
@@ -146,7 +178,23 @@ export class ReportsService {
     const projectProgress = activeProjects.map((p) => {
       const completedTasks = p.tasks.filter((t) => t.status === TASK_STATUS.DONE);
       const loggedMinutes = p.tasks.reduce((s, t) => s + t.timeEntries.reduce((m, e) => m + e.minutes, 0), 0);
+      const estimated = p.tasks.reduce((s, t) => s + (t.estimateHours ?? 0), 0);
+      const overdue = p.tasks.filter((t) => t.status !== TASK_STATUS.DONE && t.dueDate && t.dueDate < today).length;
+      const progress = p.tasks.length ? completedTasks.length / p.tasks.length : 0;
+      // Share of the project's time already used; "behind" when work done trails it by more than a quarter
+      const span = p.startDate && p.dueDate ? p.dueDate.getTime() - p.startDate.getTime() : 0;
+      const elapsed = span > 0 ? Math.min(1, Math.max(0, (Date.now() - p.startDate!.getTime()) / span)) : 0;
+      const reasons: string[] = [];
+      if (overdue) reasons.push(`${overdue} overdue task${overdue === 1 ? "" : "s"}`);
+      if (p.tasks.length && elapsed - progress > 0.25) reasons.push("behind schedule");
+      if (estimated > 0 && loggedMinutes / 60 > estimated) reasons.push("over its estimate");
+      const health = p.dueDate && p.dueDate < today && progress < 1 ? "overdue" : reasons.length ? "at_risk" : "on_track";
       return {
+        id: p.id,
+        dueDate: p.dueDate?.toISOString() ?? null,
+        overdue,
+        health,
+        healthReason: health === "overdue" ? "past its deadline" : reasons.join(", "),
         name: p.name,
         completed: completedTasks.length,
         pending: p.tasks.length - completedTasks.length,
@@ -163,14 +211,16 @@ export class ReportsService {
       id: t.id,
       title: t.title,
       dueDate: t.dueDate?.toISOString(),
+      daysLate: t.dueDate ? differenceInCalendarDays(today, t.dueDate) : 0,
       priority: t.priority,
+      project: t.project,
       assignees: t.assignees
     }));
 
     // 5. Team Workload & Performance
     // To get per-user stats, we need to find assignees within the filtered tasks
 
-    const userStatsMap = new Map<string, { user: any, completed: number, inProgress: number, total: number }>();
+    const userStatsMap = new Map<string, { user: any, completed: number, inProgress: number, total: number, overdue: number }>();
     
     for (const task of allRelevantTasks) {
       for (const assignee of task.assignees) {
@@ -178,7 +228,7 @@ export class ReportsService {
         if (filters.memberId && isManager && assignee.id !== filters.memberId) continue;
 
         if (!userStatsMap.has(assignee.id)) {
-          userStatsMap.set(assignee.id, { user: assignee, completed: 0, inProgress: 0, total: 0 });
+          userStatsMap.set(assignee.id, { user: assignee, completed: 0, inProgress: 0, total: 0, overdue: 0 });
         }
         const stats = userStatsMap.get(assignee.id)!;
         stats.total++;
@@ -187,13 +237,17 @@ export class ReportsService {
         } else if (task.status === TASK_STATUS.IN_PROGRESS) {
           stats.inProgress++;
         }
+        if (task.status !== TASK_STATUS.DONE && task.dueDate && task.dueDate < today) stats.overdue++;
       }
     }
     
     const teamPerformance = Array.from(userStatsMap.values()).sort((a, b) => b.completed - a.completed).slice(0, 10);
     const workloadDistribution = Array.from(userStatsMap.values()).map(u => ({
+      id: u.user.id,
       name: u.user.fullName,
-      taskCount: u.total - u.completed
+      avatarUrl: u.user.avatarUrl,
+      taskCount: u.total - u.completed,
+      overdue: u.overdue
     })).sort((a, b) => b.taskCount - a.taskCount);
 
     // 6. Recent Activity
@@ -202,6 +256,7 @@ export class ReportsService {
     // The card is labelled "Active Projects"; the overdue list above is capped at 10, so count separately
 
     return {
+      summary,
       kpis: {
         activeProjects: activeProjectCount,
         completedTasks: totalCompletedTasks,
