@@ -39,12 +39,15 @@ export class StorageService {
         // the rest is the file path inside the bucket
         const filePath = pathParts.slice(bucketIndex + 1).join('/');
         
-        const { error } = await supabase.storage
+        const { data, error } = await supabase.storage
           .from('uploads')
           .remove([filePath]);
-          
+
         if (error) {
           console.error(`Failed to delete from Supabase: ${error.message}`);
+        } else if (!data?.length) {
+          // Supabase reports a permission-blocked delete as success with nothing removed
+          console.error(`Supabase did not delete ${filePath} (no permission? set SUPABASE_SERVICE_ROLE_KEY)`);
         }
       }
     } catch (e) {
