@@ -9,7 +9,8 @@ export function authorize(...roles: UserRole[]) {
     }
 
     if (!roles.includes(req.user.role)) {
-      return next(new ApiError(403, `Invalid permission: User role [${req.user.role}] is not in authorized roles [${roles.join(", ")}]`));
+      // Shown to people as-is, so plain words; the role list stays out of the UI
+      return next(new ApiError(403, "Your role doesn't allow this. Ask a manager if you need it."));
     }
 
     next();
