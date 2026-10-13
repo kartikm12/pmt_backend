@@ -6,21 +6,22 @@ const MANAGER_ROLES = ["ADMIN", "MANAGER", "PROJECT_MANAGER"];
 
 export class ReportsService {
   static async getComprehensiveReport(userId: string, role: string, filters: { days?: number, projectId?: string, memberId?: string } = {}) {
-    const daysCount = filters.days || 7;
+    // Bound the range: an unchecked ?days= builds one bucket per day
+    const daysCount = Math.min(Math.max(Math.trunc(filters.days || 7), 1), 365);
     const isManager = MANAGER_ROLES.includes(role);
 
-    const taskBaseWhere: any = { deletedAt: null };
+    const taskBaseWhere: any = { deletedAt: null, project: { deletedAt: null } };
     const projectBaseWhere: any = { deletedAt: null };
     const activityBaseWhere: any = {};
 
     if (!isManager) {
       taskBaseWhere.assignees = { some: { id: userId } };
-      projectBaseWhere.members = { some: { userId } };
+      projectBaseWhere.members = { some: { userId, removedAt: null } };
       // Normal users only see their own activities or activities on tasks/projects they are part of.
       activityBaseWhere.OR = [
         { userId: userId },
         { task: { assignees: { some: { id: userId } } } },
-        { project: { members: { some: { userId } } } }
+        { project: { members: { some: { userId, removedAt: null } } } }
       ];
     }
 
@@ -29,7 +30,8 @@ export class ReportsService {
       projectBaseWhere.id = filters.projectId;
       activityBaseWhere.projectId = filters.projectId;
     }
-    if (filters.memberId) {
+    // Only managers may look at another person's numbers; for anyone else it would replace their own scope
+    if (filters.memberId && isManager) {
       taskBaseWhere.assignees = { some: { id: filters.memberId } };
       projectBaseWhere.members = { some: { userId: filters.memberId } };
       activityBaseWhere.userId = filters.memberId;
@@ -139,7 +141,7 @@ export class ReportsService {
     for (const task of allRelevantTasks) {
       for (const assignee of task.assignees) {
         // If filtering by member, ignore other assignees on the same task
-        if (filters.memberId && assignee.id !== filters.memberId) continue;
+        if (filters.memberId && isManager && assignee.id !== filters.memberId) continue;
 
         if (!userStatsMap.has(assignee.id)) {
           userStatsMap.set(assignee.id, { user: assignee, completed: 0, inProgress: 0, total: 0 });
@@ -171,14 +173,17 @@ export class ReportsService {
     });
 
     // 7. KPIs overview
-    const totalProjects = await prisma.project.count({ where: projectBaseWhere });
+    // The card is labelled "Active Projects"; the overdue list above is capped at 10, so count separately
+    const activeProjectCount = await prisma.project.count({ where: { ...projectBaseWhere, status: PROJECT_STATUS.ACTIVE } });
     const totalCompletedTasks = await prisma.task.count({ where: { ...taskBaseWhere, status: TASK_STATUS.DONE } });
     const totalPendingTasks = await prisma.task.count({ where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE } } });
-    const totalOverdueTasks = overdueTasksDb.length;
+    const totalOverdueTasks = await prisma.task.count({
+      where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } }
+    });
 
     return {
       kpis: {
-        activeProjects: totalProjects,
+        activeProjects: activeProjectCount,
         completedTasks: totalCompletedTasks,
         pendingTasks: totalPendingTasks,
         overdueTasks: totalOverdueTasks,

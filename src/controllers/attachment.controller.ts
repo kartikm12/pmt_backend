@@ -20,15 +20,18 @@ export class AttachmentController {
       throw new ApiError(400, "No file uploaded");
     }
 
+    // Check access before anything reaches storage; a task's file always belongs to the task's own project
+    let finalProjectId = projectId;
+    if (taskId) {
+      const task = await TaskService.getById(taskId, user.userId, user.role as any);
+      finalProjectId = task.projectId;
+    } else {
+      await AttachmentService.assertAttachmentAccess({ projectId, userId: user.userId, role: user.role as any });
+    }
+
+    const fileUrl = await StorageService.uploadFile(file.buffer, file.originalname, file.mimetype, 'attachments');
+
     try {
-      let finalProjectId = projectId;
-      if (!finalProjectId && taskId) {
-        const task = await TaskService.getById(taskId, user.userId, user.role as any);
-        finalProjectId = task.projectId;
-      }
-
-      const fileUrl = await StorageService.uploadFile(file.buffer, file.originalname, file.mimetype, 'attachments');
-
       const attachment = await AttachmentService.create({
         name: file.originalname,
         url: fileUrl,
@@ -42,6 +45,7 @@ export class AttachmentController {
 
       res.status(201).json(attachment);
     } catch (error) {
+      await StorageService.deleteFile(fileUrl); // don't leave an orphan file in the bucket
       throw error;
     }
   }

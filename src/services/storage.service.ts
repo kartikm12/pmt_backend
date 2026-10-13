@@ -1,4 +1,5 @@
 import { supabase } from '../utils/supabase.js';
+import { ApiError } from '../utils/apiError.js';
 import crypto from 'crypto';
 import path from 'path';
 
@@ -15,7 +16,8 @@ export class StorageService {
       });
 
     if (error) {
-      throw new Error(`Failed to upload to Supabase: ${error.message}`);
+      console.error(`Failed to upload to Supabase: ${error.message}`);
+      throw new ApiError(502, "File storage is unavailable right now. Please try again.");
     }
 
     const { data: publicUrlData } = supabase.storage

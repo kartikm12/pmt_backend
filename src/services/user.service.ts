@@ -33,9 +33,9 @@ export class UserService {
 
     if (input.email && input.email !== existingUser.email) {
       const emailTaken = await prisma.user.findFirst({
+        // Removed members still hold their email (soft delete), so don't filter on deletedAt
         where: {
           email: input.email,
-          deletedAt: null,
           id: { not: userId }
         }
       });
@@ -57,6 +57,10 @@ export class UserService {
         avatarUrl: input.avatarUrl === undefined ? undefined : input.avatarUrl
       }
     });
+
+    if (input.avatarUrl === null && existingUser.avatarUrl) {
+      await StorageService.deleteFile(existingUser.avatarUrl);
+    }
 
     const { passwordHash: _, ...userWithoutPassword } = user;
 
@@ -123,7 +127,10 @@ export class UserService {
       throw new ApiError(404, "User not found");
     }
 
-    // Delete old avatar file if it exists and was uploaded locally
+    // Upload first: if storage fails, the user keeps their current photo
+    const avatarUrl = await StorageService.uploadFile(file.buffer, file.originalname, file.mimetype, 'avatars');
+
+    // Then delete the old avatar file (local legacy upload or Supabase)
     if (existingUser.avatarUrl && existingUser.avatarUrl.startsWith("/uploads/")) {
       const oldRelativePath = existingUser.avatarUrl.replace(/^\/+/, "");
       const oldFilePath = path.join(__dirname, "../../public", oldRelativePath);
@@ -137,8 +144,6 @@ export class UserService {
     } else if (existingUser.avatarUrl && existingUser.avatarUrl.includes("supabase.co")) {
       await StorageService.deleteFile(existingUser.avatarUrl);
     }
-
-    const avatarUrl = await StorageService.uploadFile(file.buffer, file.originalname, file.mimetype, 'avatars');
 
     const user = await prisma.user.update({
       where: { id: userId },

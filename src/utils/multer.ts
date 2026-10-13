@@ -74,9 +74,16 @@ export async function validateFileBytes(req: Request, _res: Response, next: Next
     const { fileTypeFromBuffer } = await import("file-type");
     const detected = await fileTypeFromBuffer(file.buffer);
 
-    // Plain text / CSV files have no binary magic bytes — skip the byte check
-    const textOnlyTypes = new Set(["text/plain", "text/csv"]);
-    if (textOnlyTypes.has(file.mimetype)) {
+    // .txt/.csv have no magic bytes, so go by extension (Windows browsers send .csv as application/vnd.ms-excel);
+    // anything that *does* carry a binary signature is not really text
+    const extension = path.extname(file.originalname).toLowerCase();
+    if (extension === ".txt" || extension === ".csv") {
+      return detected ? next(new ApiError(400, "File content does not match its declared type")) : next();
+    }
+
+    // Legacy Office files (.doc/.xls/.ppt) all share one container signature
+    const legacyOffice = new Set(["application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint"]);
+    if (detected?.mime === "application/x-cfb" && legacyOffice.has(file.mimetype)) {
       return next();
     }
 

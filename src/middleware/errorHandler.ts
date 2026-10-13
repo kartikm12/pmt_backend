@@ -1,6 +1,10 @@
 import fs from "fs";
+import multer from "multer";
 import type { NextFunction, Request, Response } from "express";
-import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { Prisma } from "@prisma/client";
+// Must be the class the client actually throws; the runtime/library import is a separate copy under ESM,
+// so `instanceof` against it never matched and every Prisma error became a 500
+const { PrismaClientKnownRequestError } = Prisma;
 import { ZodError } from "zod";
 import { ApiError } from "../utils/apiError.js";
 
@@ -25,8 +29,32 @@ export function errorHandler(
     });
   }
 
+  // body-parser marks client mistakes (malformed JSON, body too large) with expose + a 4xx status
+  const httpError = error as { status?: number; expose?: boolean; type?: string };
+  if (httpError?.expose && typeof httpError.status === "number" && httpError.status < 500) {
+    const message =
+      httpError.type === "entity.parse.failed" ? "Request body is not valid JSON"
+      : httpError.type === "entity.too.large" ? "Request body is too large"
+      : "Bad request";
+    return res.status(httpError.status).json({ message });
+  }
+
   if (error instanceof PrismaClientKnownRequestError && error.code === "P2002") {
     return res.status(409).json({ message: "A unique constraint was violated" });
+  }
+
+  // Record missing (e.g. stale notification id) or pointing at a user/project that doesn't exist
+  if (error instanceof PrismaClientKnownRequestError && error.code === "P2025") {
+    return res.status(404).json({ message: "Record not found" });
+  }
+
+  if (error instanceof PrismaClientKnownRequestError && error.code === "P2003") {
+    return res.status(400).json({ message: "A referenced record does not exist" });
+  }
+
+  if (error instanceof multer.MulterError) {
+    const message = error.code === "LIMIT_FILE_SIZE" ? "File is too large (max 10 MB)" : error.message;
+    return res.status(400).json({ message });
   }
 
   console.error(error);

@@ -1,10 +1,12 @@
 import { prisma } from "../prisma/client.js";
 import {
   MEMBERSHIP_ROLE,
+  USER_ROLE,
   type MembershipRole,
   type UserRole
 } from "../constants/enums.js";
 import { ApiError } from "../utils/apiError.js";
+import { socketService } from "./socket.service.js";
 import { AuthService } from "./auth.service.js";
 import { ActivityService } from "./activity.service.js";
 
@@ -13,6 +15,7 @@ export class TeamService {
     const users = await prisma.user.findMany({
       where: { deletedAt: null },
       orderBy: { createdAt: "desc" },
+      omit: { passwordHash: true },
       include: {
         memberships: {
           where: { removedAt: null, project: { deletedAt: null } },
@@ -47,8 +50,22 @@ export class TeamService {
     });
   }
 
+  // Only an Admin may grant the Admin role or change/remove an Admin's account
+  static assertCanManage(actorRole: UserRole, targetRole?: UserRole, newRole?: UserRole) {
+    if (actorRole === USER_ROLE.ADMIN) return;
+    if (targetRole === USER_ROLE.ADMIN || newRole === USER_ROLE.ADMIN) {
+      throw new ApiError(403, "Only an Admin can manage Admin accounts");
+    }
+  }
+
+  static async assertProjectExists(projectId: string) {
+    const project = await prisma.project.findFirst({ where: { id: projectId, deletedAt: null }, select: { id: true } });
+    if (!project) throw new ApiError(400, "Selected project does not exist");
+  }
+
   static async invite(
     actorUserId: string,
+    actorRole: UserRole,
     input: {
       fullName: string;
       email: string;
@@ -59,6 +76,9 @@ export class TeamService {
       membershipRole?: MembershipRole;
     }
   ) {
+    this.assertCanManage(actorRole, undefined, input.role);
+    if (input.projectId) await this.assertProjectExists(input.projectId);
+
     const registration = await AuthService.register({
       fullName: input.fullName,
       email: input.email,
@@ -102,6 +122,7 @@ export class TeamService {
 
     return prisma.user.findUnique({
       where: { id: registration.user.id },
+      omit: { passwordHash: true },
       include: {
         memberships: {
           where: { removedAt: null, project: { deletedAt: null } },
@@ -111,7 +132,11 @@ export class TeamService {
     });
   }
 
-  static async remove(userId: string, actorUserId: string) {
+  static async remove(userId: string, actorUserId: string, actorRole: UserRole) {
+    if (userId === actorUserId) {
+      throw new ApiError(400, "You cannot remove yourself from the team");
+    }
+
     const user = await prisma.user.findFirst({
       where: { id: userId, deletedAt: null }
     });
@@ -120,7 +145,18 @@ export class TeamService {
       throw new ApiError(404, "Team member not found");
     }
 
+    this.assertCanManage(actorRole, user.role);
+
+    const activeSessions = await prisma.userSession.findMany({
+      where: { userId, isActive: true },
+      select: { id: true }
+    });
+
     await prisma.$transaction([
+      prisma.userSession.updateMany({
+        where: { userId, isActive: true },
+        data: { isActive: false, revokedAt: new Date(), revokedReason: "USER_REMOVED" }
+      }),
       prisma.user.update({
         where: { id: userId },
         data: { deletedAt: new Date() }
@@ -139,12 +175,18 @@ export class TeamService {
       userId: actorUserId
     });
 
+    await socketService.forceLogoutSessions(
+      activeSessions.map((s) => s.id),
+      "Your account has been removed from the workspace."
+    );
+
     return { success: true };
   }
 
   static async update(
     userId: string,
     actorUserId: string,
+    actorRole: UserRole,
     input: {
       fullName?: string;
       role?: UserRole;
@@ -160,6 +202,12 @@ export class TeamService {
     if (!user) {
       throw new ApiError(404, "Team member not found");
     }
+
+    if (userId === actorUserId && input.role && input.role !== user.role) {
+      throw new ApiError(400, "You cannot change your own role");
+    }
+    this.assertCanManage(actorRole, user.role, input.role);
+    if (input.projectId) await this.assertProjectExists(input.projectId);
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
@@ -205,6 +253,7 @@ export class TeamService {
 
     return prisma.user.findUnique({
       where: { id: userId },
+      omit: { passwordHash: true },
       include: {
         memberships: {
           where: { removedAt: null, project: { deletedAt: null } },

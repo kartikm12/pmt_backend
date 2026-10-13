@@ -19,6 +19,28 @@ export class ProjectService {
     return role === USER_ROLE.MANAGER || role === USER_ROLE.PROJECT_MANAGER || role === USER_ROLE.ADMIN;
   }
 
+  // Unknown or removed users would otherwise surface as a raw foreign-key 500
+  static async assertActiveUsers(userIds: string[]) {
+    const unique = [...new Set(userIds)];
+    if (unique.length === 0) return;
+    const found = await prisma.user.count({ where: { id: { in: unique }, deletedAt: null } });
+    if (found !== unique.length) {
+      throw new ApiError(400, "One or more selected people are not active team members");
+    }
+  }
+
+  // Live project updates go to the project's room and to each member, never to every connected user
+  static async broadcastProjectUpdate(projectId: string, payload: unknown, extraUserIds: string[] = []) {
+    const members = await prisma.projectMember.findMany({
+      where: { projectId, removedAt: null },
+      select: { userId: true }
+    });
+    socketService.emitToProject(projectId, "project_updated", payload);
+    for (const userId of new Set([...members.map((m) => m.userId), ...extraUserIds])) {
+      socketService.emitToUser(userId, "project_updated", payload);
+    }
+  }
+
   static async assertProjectAccess(projectId: string, userId: string, role: UserRole) {
     if (this.isManagerRole(role)) {
       const project = await prisma.project.findFirst({
@@ -50,7 +72,8 @@ export class ProjectService {
     }
   }
 
-  static async list(userId: string, role: UserRole, page = 1, limit = 50) {
+  // shortcut: the UI has no paging and reads one page, so the page is large; add paging to the UI past ~1000 projects
+  static async list(userId: string, role: UserRole, page = 1, limit = 1000) {
     const isManager = this.isManagerRole(role);
     const skip = (page - 1) * limit;
 
@@ -243,6 +266,8 @@ export class ProjectService {
       memberIds?: string[];
     }
   ) {
+    await this.assertActiveUsers([input.managerId, ...(input.memberIds ?? [])]);
+
     const slugBase = createSlug(input.name);
     const uniqueSlug = `${slugBase}-${Date.now().toString().slice(-6)}`;
 
@@ -306,6 +331,18 @@ export class ProjectService {
     }
   ) {
     const existingProject = await this.getById(projectId, userId, userRole);
+    const managerId = input.managerId ?? existingProject.managerId;
+    // The project manager always stays on the team, even if the form left them out
+    const memberIds = input.memberIds ? [...new Set([managerId, ...input.memberIds])] : undefined;
+    await this.assertActiveUsers([...(input.managerId ? [input.managerId] : []), ...(memberIds ?? [])]);
+
+    const startDate = input.startDate === undefined ? existingProject.startDate : input.startDate ? new Date(input.startDate) : null;
+    const dueDate = input.dueDate === undefined ? existingProject.dueDate : input.dueDate ? new Date(input.dueDate) : null;
+    if (startDate && dueDate && startDate > dueDate) {
+      throw new ApiError(400, "Start date must be on or before the end date");
+    }
+
+    const statusChanged = input.status !== undefined && input.status !== existingProject.status;
 
     const project = await prisma.project.update({
       where: { id: projectId },
@@ -313,14 +350,16 @@ export class ProjectService {
         name: input.name,
         description: input.description,
         status: input.status,
-        startDate: input.startDate === undefined ? undefined : input.startDate ? new Date(input.startDate) : null,
-        dueDate: input.dueDate === undefined ? undefined : input.dueDate ? new Date(input.dueDate) : null,
+        startDate: input.startDate === undefined ? undefined : startDate,
+        dueDate: input.dueDate === undefined ? undefined : dueDate,
         managerId: input.managerId,
-        completedAt: input.status === PROJECT_STATUS.COMPLETED ? new Date() : undefined
+        // Stamp completion only when the status actually changes, so re-saving doesn't move the date
+        completedAt: !statusChanged ? undefined : input.status === PROJECT_STATUS.COMPLETED ? new Date() : null
       }
     });
 
-    if (input.memberIds) {
+    if (memberIds) {
+      input.memberIds = memberIds;
       const existingMembers = await prisma.projectMember.findMany({
         where: { projectId, removedAt: null },
         select: { userId: true }
@@ -339,14 +378,14 @@ export class ProjectService {
           if (existingRecord) {
             await prisma.projectMember.update({
               where: { id: existingRecord.id },
-              data: { removedAt: null, role: memberId === input.managerId ? MEMBERSHIP_ROLE.MANAGER : MEMBERSHIP_ROLE.CONTRIBUTOR }
+              data: { removedAt: null, role: memberId === managerId ? MEMBERSHIP_ROLE.MANAGER : MEMBERSHIP_ROLE.CONTRIBUTOR }
             });
           } else {
             await prisma.projectMember.create({
               data: {
                 projectId,
                 userId: memberId,
-                role: memberId === input.managerId ? MEMBERSHIP_ROLE.MANAGER : MEMBERSHIP_ROLE.CONTRIBUTOR
+                role: memberId === managerId ? MEMBERSHIP_ROLE.MANAGER : MEMBERSHIP_ROLE.CONTRIBUTOR
               }
             });
           }
@@ -381,20 +420,11 @@ export class ProjectService {
     });
 
     const updatedProject = await this.getById(project.id, userId, userRole);
-    
-    // Notify newly added members individually so they get the update even if not in the project room
-    if (input.memberIds) {
-      const existingMembers = await prisma.projectMember.findMany({
-        where: { projectId, removedAt: null },
-        select: { userId: true }
-      });
-      const currentMemberIds = existingMembers.map((m: any) => m.userId);
-      // We can just emit to all current members or just the ones that were just added.
-      // Since we already emitToAll, it's mostly for immediate focus.
-    }
 
-    socketService.emitToProject(project.id, "project_updated", updatedProject);
-    socketService.emitToAll("project_updated", updatedProject); // Ensure global list updates
+    // Removed members also hear about it, so their lists drop the project; task lists stay out of the broadcast
+    const { tasks: _tasks, ...projectPayload } = updatedProject;
+    const removedIds = existingProject.teamMemberIds.filter((id) => !updatedProject.teamMemberIds.includes(id));
+    await this.broadcastProjectUpdate(project.id, projectPayload, removedIds);
     return updatedProject;
   }
 
@@ -426,6 +456,9 @@ export class ProjectService {
     });
 
     socketService.emitToProject(project.id, "project_deleted", { projectId: project.id });
+    for (const memberId of project.teamMemberIds) {
+      socketService.emitToUser(memberId, "project_deleted", { projectId: project.id });
+    }
 
     return { success: true };
   }
@@ -437,23 +470,25 @@ export class ProjectService {
     input: { memberIds: string[]; role?: MembershipRole }
   ) {
     await this.getById(projectId, actorUserId, userRole);
+    await this.assertActiveUsers(input.memberIds);
 
-    const existingMembers = await prisma.projectMember.findMany({
-      where: { projectId },
+    const activeMembers = await prisma.projectMember.findMany({
+      where: { projectId, removedAt: null },
       select: { userId: true }
     });
 
-    const existingUserIds = new Set(existingMembers.map((member) => member.userId));
-    const newMemberIds = input.memberIds.filter((memberId) => !existingUserIds.has(memberId));
+    const activeUserIds = new Set(activeMembers.map((member) => member.userId));
+    const newMemberIds = [...new Set(input.memberIds)].filter((memberId) => !activeUserIds.has(memberId));
 
     if (newMemberIds.length > 0) {
-      await prisma.projectMember.createMany({
-        data: newMemberIds.map((memberId) => ({
-          projectId,
-          userId: memberId,
-          role: input.role ?? MEMBERSHIP_ROLE.CONTRIBUTOR
-        }))
-      });
+      // Upsert so someone removed earlier can be added back (their old row still exists)
+      for (const memberId of newMemberIds) {
+        await prisma.projectMember.upsert({
+          where: { projectId_userId: { projectId, userId: memberId } },
+          update: { removedAt: null, role: input.role ?? MEMBERSHIP_ROLE.CONTRIBUTOR },
+          create: { projectId, userId: memberId, role: input.role ?? MEMBERSHIP_ROLE.CONTRIBUTOR }
+        });
+      }
 
       // Send notifications to new members
       for (const memberId of newMemberIds) {
@@ -492,6 +527,11 @@ export class ProjectService {
       throw new ApiError(404, "Project member not found");
     }
 
+    const project = await this.getById(projectId, actorUserId, userRole);
+    if (project.managerId === memberId) {
+      throw new ApiError(400, "The project manager cannot be removed from the team; assign a new manager first");
+    }
+
     await prisma.projectMember.update({
       where: { projectId_userId: { projectId, userId: memberId } },
       data: { removedAt: new Date() }
@@ -506,6 +546,9 @@ export class ProjectService {
       projectId,
       metadata: { memberId }
     });
+
+    const { tasks: _tasks, ...projectPayload } = await this.getById(projectId, actorUserId, userRole);
+    await this.broadcastProjectUpdate(projectId, projectPayload, [memberId]);
 
     return { success: true };
   }

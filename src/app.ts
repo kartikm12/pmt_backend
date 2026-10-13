@@ -45,12 +45,14 @@ app.use(
 );
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(morgan("dev"));
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
+// Files go through multer (10 MB); JSON bodies here are small forms
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ limit: "1mb", extended: true }));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const uploadsDir = path.join(__dirname, "../../frontend/public/uploads");
+// Legacy local uploads live in this repo's public/uploads (same path from src/ and dist/)
+const uploadsDir = path.join(__dirname, "../public/uploads");
 const distDir = path.join(__dirname, "../../../frontend/dist");
 
 app.use("/uploads", express.static(uploadsDir));
@@ -66,6 +68,8 @@ app.get("/health", async (_req, res) => {
 });
 
 app.use("/api", globalRateLimiter, apiRouter);
+// Unknown API paths must 404 here, before the dev-only SPA catch-all below turns them into a 500
+app.use("/api", notFound);
 
 // Only serve the frontend locally (in production, frontend is on Vercel)
 if (env.NODE_ENV !== "production") {

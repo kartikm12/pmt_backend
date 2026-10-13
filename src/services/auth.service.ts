@@ -24,22 +24,24 @@ export class AuthService {
       where: { email: normalizedEmail }
     });
 
-    if (existingUser) {
+    // A removed member keeps their row (soft delete), so a re-invite revives it instead of failing on the unique email
+    const canRevive = existingUser?.deletedAt && input.isInvited;
+    if (existingUser && !canRevive) {
       throw new ApiError(409, "User with this email already exists");
     }
 
     const passwordHash = await bcrypt.hash(input.password, env.BCRYPT_ROUNDS);
+    const data = {
+      fullName: input.fullName,
+      email: normalizedEmail,
+      passwordHash,
+      role: userCount === 0 ? USER_ROLE.MANAGER : input.role ?? USER_ROLE.TEAM_MEMBER,
+      roleLocked: input.isInvited ? true : false
+    };
 
-    const user = await prisma.user.create({
-      data: {
-        fullName: input.fullName,
-        email: normalizedEmail,
-        passwordHash,
-        role: userCount === 0 ? USER_ROLE.MANAGER : input.role ?? USER_ROLE.TEAM_MEMBER,
-        // @ts-ignore
-        roleLocked: input.isInvited ? true : false
-      }
-    });
+    const user = canRevive
+      ? await prisma.user.update({ where: { id: existingUser.id }, data: { ...data, deletedAt: null, title: null } })
+      : await prisma.user.create({ data });
 
     const { passwordHash: _, ...userWithoutPassword } = user;
 

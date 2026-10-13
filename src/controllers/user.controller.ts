@@ -13,6 +13,10 @@ export class UserController {
     if (!file) {
       throw new ApiError(400, "No file uploaded");
     }
+    // The shared upload filter also allows documents; a profile photo must be an image
+    if (!file.mimetype.startsWith("image/")) {
+      throw new ApiError(400, "Profile photo must be an image (PNG, JPG, GIF or WebP)");
+    }
     const user = await UserService.uploadAvatar(req.user!.userId, file);
     return res.status(200).json(user);
   }

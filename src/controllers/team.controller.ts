@@ -8,17 +8,17 @@ export class TeamController {
   }
 
   static async invite(req: Request, res: Response) {
-    const member = await TeamService.invite(req.user!.userId, req.body);
+    const member = await TeamService.invite(req.user!.userId, req.user!.role, req.body);
     return res.status(201).json(member);
   }
 
   static async remove(req: Request, res: Response) {
-    const result = await TeamService.remove(req.params.userId, req.user!.userId);
+    const result = await TeamService.remove(req.params.userId, req.user!.userId, req.user!.role);
     return res.status(200).json(result);
   }
 
   static async update(req: Request, res: Response) {
-    const member = await TeamService.update(req.params.userId, req.user!.userId, req.body);
+    const member = await TeamService.update(req.params.userId, req.user!.userId, req.user!.role, req.body);
     return res.status(200).json(member);
   }
 }

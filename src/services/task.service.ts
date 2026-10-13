@@ -9,7 +9,8 @@ import { generateShortId } from "../utils/id.js";
 import { ProjectService } from "./project.service.js";
 
 export class TaskService {
-  static async list(userId: string, role: UserRole, projectId?: string, page = 1, limit = 50) {
+  // shortcut: the UI has no paging and reads one page, so the page is large; add paging to the UI past ~1000 tasks
+  static async list(userId: string, role: UserRole, projectId?: string, page = 1, limit = 1000) {
     const isManager = ProjectService.isManagerRole(role);
     const skip = (page - 1) * limit;
 
@@ -100,6 +101,11 @@ export class TaskService {
       sortOrder?: number;
     }
   ) {
+    // A task in a missing or archived project would be invisible everywhere
+    const project = await prisma.project.findFirst({ where: { id: input.projectId, deletedAt: null }, select: { id: true } });
+    if (!project) throw new ApiError(400, "Selected project does not exist");
+    await ProjectService.assertActiveUsers(input.assigneeIds ?? []);
+
     const task = await prisma.task.create({
       data: {
         id: generateShortId(),
@@ -198,12 +204,12 @@ export class TaskService {
     if (isManager && input.projectId && input.projectId !== existingTask.projectId) {
       await ProjectService.assertProjectAccess(input.projectId, actorUserId, userRole as UserRole);
     }
-    const completedAt =
-      input.status === undefined
-        ? undefined
-        : input.status === TASK_STATUS.DONE
-          ? new Date()
-          : null;
+    if (input.assigneeIds) await ProjectService.assertActiveUsers(input.assigneeIds);
+
+    // Only stamp completion when the status actually changes; the edit form always resends the status,
+    // which used to reset completedAt on every save and skew the leaderboard and reports
+    const statusChanged = input.status !== undefined && input.status !== existingTask.status;
+    const completedAt = !statusChanged ? undefined : input.status === TASK_STATUS.DONE ? new Date() : null;
 
     const updatedTask = await prisma.task.update({
       where: { id: taskId },

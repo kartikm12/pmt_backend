@@ -1,12 +1,13 @@
 import { prisma } from "../prisma/client.js";
 
 export class ActivityLogService {
-  static async list(filters: { projectId?: string; taskId?: string; userId?: string; limit?: number }) {
+  static async list(filters: { projectId?: string; taskId?: string; userId?: string; limit?: number; scope?: object }) {
     return prisma.activityLog.findMany({
       where: {
         projectId: filters.projectId,
         taskId: filters.taskId,
-        userId: filters.userId
+        userId: filters.userId,
+        ...filters.scope
       },
       include: {
         user: {

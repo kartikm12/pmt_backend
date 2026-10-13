@@ -149,9 +149,22 @@ export class SocketService {
       socket.join(`session_${sessionId}`);
 
       // Handle custom events
-      socket.on("join_project", (projectId: string) => {
-        socket.join(`project_${projectId}`);
-        console.log(`Socket ${socket.id} joined project room: project_${projectId}`);
+      // Project rooms carry comment text and files, so only people with access may join
+      socket.on("join_project", async (projectId: string) => {
+        if (typeof projectId !== "string" || !projectId) return;
+        try {
+          // Dynamic import: project.service imports this module
+          const [{ ProjectService }, { prisma }] = await Promise.all([
+            import("./project.service.js"),
+            import("../prisma/client.js")
+          ]);
+          const user = await prisma.user.findFirst({ where: { id: userId, deletedAt: null }, select: { role: true } });
+          if (!user) return;
+          await ProjectService.assertProjectAccess(projectId, userId, user.role);
+          socket.join(`project_${projectId}`);
+        } catch {
+          // No access (or project gone): silently stay out of the room
+        }
       });
 
       socket.on("leave_project", (projectId: string) => {

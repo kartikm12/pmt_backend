@@ -6,7 +6,7 @@ import { authenticate } from "../middleware/authenticate.js";
 import { authorize } from "../middleware/authorize.js";
 import { validate } from "../middleware/validate.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { createTaskSchema, updateTaskSchema } from "../validators/task.validator.js";
+import { createCommentSchema, createTaskSchema, updateTaskSchema } from "../validators/task.validator.js";
 
 export const taskRouter = Router();
 
@@ -38,5 +38,5 @@ taskRouter.delete("/:taskId", authorize(USER_ROLE.MANAGER, USER_ROLE.PROJECT_MAN
 
 // Task Comments
 taskRouter.get("/:taskId/comments", asyncHandler(CommentController.list));
-taskRouter.post("/:taskId/comments", asyncHandler(CommentController.create));
+taskRouter.post("/:taskId/comments", validate(createCommentSchema), asyncHandler(CommentController.create));
 taskRouter.delete("/comments/:commentId", asyncHandler(CommentController.remove));
