@@ -29,12 +29,23 @@ export class ActivityController {
       }
     }
 
+    // Audit-log filters: date range, action type and paging
+    const from = typeof req.query.from === "string" ? new Date(req.query.from) : undefined;
+    const to = typeof req.query.to === "string" ? new Date(req.query.to) : undefined;
+    const action = typeof req.query.action === "string" && /^[A-Z_]{3,40}$/.test(req.query.action) ? req.query.action : undefined;
+    const skip = Math.max(Math.trunc(Number(req.query.skip)) || 0, 0);
+    const range = {
+      ...(from && !isNaN(+from) ? { gte: from } : {}),
+      ...(to && !isNaN(+to) ? { lte: to } : {})
+    };
+
     const logs = await ActivityLogService.list({
       projectId,
       taskId,
       userId: req.query.userId as string | undefined,
-      limit: Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200) : undefined,
-      scope
+      limit: Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 500) : undefined,
+      skip,
+      scope: { ...scope, ...(Object.keys(range).length ? { createdAt: range } : {}), ...(action ? { action } : {}) }
     });
 
     return res.status(200).json(logs);

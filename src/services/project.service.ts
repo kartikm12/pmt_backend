@@ -14,6 +14,9 @@ import { NotificationService } from "./notification.service.js";
 import { socketService } from "./socket.service.js";
 import { generateShortId } from "../utils/id.js";
 
+export type ProjectRole = "viewer" | "contributor" | "manager";
+const ROLE_RANK: Record<ProjectRole, number> = { viewer: 0, contributor: 1, manager: 2 };
+
 export class ProjectService {
   static isManagerRole(role?: UserRole) {
     return role === USER_ROLE.MANAGER || role === USER_ROLE.PROJECT_MANAGER || role === USER_ROLE.ADMIN;
@@ -47,6 +50,35 @@ export class ProjectService {
     for (const userId of new Set([...members.map((m) => m.userId), ...extraUserIds])) {
       socketService.emitToUser(userId, "project_updated", payload);
     }
+  }
+
+  // What this person may do in one project: company-wide managers manage everything; otherwise the
+  // membership role decides (OWNER/MANAGER manage, VIEWER only reads). Task assignees who aren't
+  // members keep contributor access, as before. null = no access (deleted or unseen project).
+  static async projectRole(projectId: string, userId: string, globalRole: UserRole): Promise<ProjectRole | null> {
+    const project = await prisma.project.findFirst({
+      where: { id: projectId, deletedAt: null },
+      select: {
+        members: { where: { userId, removedAt: null }, select: { role: true } },
+        tasks: { where: { deletedAt: null, assignees: { some: { id: userId } } }, select: { id: true }, take: 1 }
+      }
+    });
+    if (!project) return null;
+    if (this.isManagerRole(globalRole)) return "manager";
+    const membership = project.members[0]?.role;
+    if (membership === MEMBERSHIP_ROLE.OWNER || membership === MEMBERSHIP_ROLE.MANAGER) return "manager";
+    if (membership === MEMBERSHIP_ROLE.VIEWER) return "viewer";
+    if (membership || project.tasks.length) return "contributor";
+    return null;
+  }
+
+  static async requireProjectRole(projectId: string, userId: string, globalRole: UserRole, needed: ProjectRole) {
+    const role = await this.projectRole(projectId, userId, globalRole);
+    if (!role) throw new ApiError(404, "Project not found");
+    if (ROLE_RANK[role] < ROLE_RANK[needed]) {
+      throw new ApiError(403, needed === "manager" ? "Only this project's managers can do that" : "You have view-only access to this project");
+    }
+    return role;
   }
 
   static async assertProjectAccess(projectId: string, userId: string, role: UserRole) {
@@ -180,20 +212,19 @@ export class ProjectService {
     };
   }
 
-  static async getBundle(projectId: string, userId?: string, role?: UserRole) {
-    const isManager = !userId || !role || this.isManagerRole(role);
+  static async getBundle(projectId: string, userId: string, role: UserRole) {
+    const myRole = await this.projectRole(projectId, userId, role);
+    if (!myRole) {
+      throw new ApiError(404, "Project not found");
+    }
+    // Members see the whole board; someone who is only assigned a task sees just their own work
+    const isMember = this.isManagerRole(role) || !!(await prisma.projectMember.findFirst({
+      where: { projectId, userId, removedAt: null },
+      select: { id: true }
+    }));
 
-    const project = await prisma.project.findFirst({
-      where: { 
-        id: projectId, 
-        deletedAt: null,
-        ...(isManager ? {} : {
-          OR: [
-            { members: { some: { userId, removedAt: null } } },
-            { tasks: { some: { deletedAt: null, assignees: { some: { id: userId } } } } }
-          ]
-        })
-      },
+    const project = await prisma.project.findFirstOrThrow({
+      where: { id: projectId, deletedAt: null },
       include: {
         manager: {
           select: { id: true, fullName: true, email: true, avatarUrl: true, title: true, status: true }
@@ -214,31 +245,35 @@ export class ProjectService {
           }
         },
         tasks: {
-          where: { 
+          where: {
             deletedAt: null,
-            ...(isManager ? {} : { assignees: { some: { id: userId } } })
+            ...(isMember ? {} : { assignees: { some: { id: userId } } })
           },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
           include: {
             assignees: {
               select: { id: true, fullName: true, email: true, avatarUrl: true, title: true, status: true }
             },
-            attachments: true
+            attachments: true,
+            subtasks: { select: { done: true } },
+            blockedBy: { where: { deletedAt: null }, select: { id: true, title: true, status: true } }
           }
         },
-        attachments: true
+        attachments: true,
+        milestones: {
+          orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
+          include: { tasks: { where: { deletedAt: null }, select: { status: true } } }
+        }
       }
     });
 
-    if (!project) {
-      throw new ApiError(404, "Project not found");
-    }
+    const { tasks, members, manager, attachments, milestones, ...projectData } = project;
 
-    const { tasks, members, manager, attachments, ...projectData } = project;
-
-    const tasksWithStatus = tasks.map((task: any) => ({
+    const tasksWithStatus = tasks.map(({ subtasks, ...task }: any) => ({
       ...task,
-      attachments: task.attachments || []
+      attachments: task.attachments || [],
+      subtaskTotal: subtasks.length,
+      subtaskDone: subtasks.filter((s: any) => s.done).length
     }));
 
     const usersMap = new Map();
@@ -252,9 +287,15 @@ export class ProjectService {
       project: { 
         ...projectData, 
         manager, 
-        members: members.map((m: any) => ({ userId: m.userId, user: m.user })), 
+        members: members.map((m: any) => ({ userId: m.userId, role: m.role, user: m.user })),
         teamMemberIds: members.map((m: any) => m.userId),
-        attachments: attachments || [] 
+        attachments: attachments || [],
+        myRole,
+        milestones: milestones.map(({ tasks: mTasks, ...m }) => ({
+          ...m,
+          taskTotal: mTasks.length,
+          taskDone: mTasks.filter((t) => t.status === "DONE").length
+        }))
       },
       tasks: tasksWithStatus,
       users: Array.from(usersMap.values())
@@ -272,9 +313,13 @@ export class ProjectService {
       dueDate?: string;
       managerId: string;
       memberIds?: string[];
+      copyFromProjectId?: string;
     }
   ) {
     await this.assertActiveUsers([input.managerId, ...(input.memberIds ?? [])]);
+    if (input.copyFromProjectId) {
+      await this.requireProjectRole(input.copyFromProjectId, userId, userRole, "viewer");
+    }
 
     const slugBase = createSlug(input.name);
     const uniqueSlug = `${slugBase}-${Date.now().toString().slice(-6)}`;
@@ -298,6 +343,10 @@ export class ProjectService {
         }
       }
     });
+
+    if (input.copyFromProjectId) {
+      await this.copyPlan(input.copyFromProjectId, project.id, project.startDate, input.managerId, userId);
+    }
 
     await ActivityService.log({
       action: "PROJECT_CREATED",
@@ -338,6 +387,7 @@ export class ProjectService {
       memberIds?: string[];
     }
   ) {
+    await this.requireProjectRole(projectId, userId, userRole, "manager");
     const existingProject = await this.getById(projectId, userId, userRole);
     const managerId = input.managerId ?? existingProject.managerId;
     // The project manager always stays on the team, even if the form left them out
@@ -440,20 +490,23 @@ export class ProjectService {
   }
 
   static async archive(projectId: string, userId: string, userRole: UserRole) {
+    await this.requireProjectRole(projectId, userId, userRole, "manager");
     const project = await this.getById(projectId, userId, userRole);
 
+    // One timestamp for all three, so "Restore" can tell what was removed together with the project
+    const now = new Date();
     await prisma.$transaction([
       prisma.project.update({
         where: { id: projectId },
-        data: { deletedAt: new Date() }
+        data: { deletedAt: now }
       }),
       prisma.projectMember.updateMany({
         where: { projectId, removedAt: null },
-        data: { removedAt: new Date() }
+        data: { removedAt: now }
       }),
       prisma.task.updateMany({
         where: { projectId, deletedAt: null },
-        data: { deletedAt: new Date() }
+        data: { deletedAt: now }
       })
     ]);
 
@@ -480,6 +533,7 @@ export class ProjectService {
     userRole: UserRole,
     input: { memberIds: string[]; role?: MembershipRole }
   ) {
+    await this.requireProjectRole(projectId, actorUserId, userRole, "manager");
     const current = await this.getById(projectId, actorUserId, userRole);
     await this.assertActiveUsers(input.memberIds, current.teamMemberIds);
 
@@ -530,6 +584,7 @@ export class ProjectService {
   }
 
   static async removeMember(projectId: string, memberId: string, actorUserId: string, userRole: UserRole) {
+    await this.requireProjectRole(projectId, actorUserId, userRole, "manager");
     const membership = await prisma.projectMember.findUnique({
       where: { projectId_userId: { projectId, userId: memberId } }
     });
@@ -561,6 +616,149 @@ export class ProjectService {
     const { tasks: _tasks, ...projectPayload } = await this.getById(projectId, actorUserId, userRole);
     await this.broadcastProjectUpdate(projectId, projectPayload, [memberId]);
 
+    return { success: true };
+  }
+
+  // "Start from an existing project": copy its milestones and open plan (tasks, subtasks, labels, estimates),
+  // shifting dates by the gap between the two start dates. Copies start as To Do, assigned to the new manager.
+  static async copyPlan(sourceId: string, targetId: string, targetStart: Date | null, assigneeId: string, actorUserId: string) {
+    const source = await prisma.project.findUniqueOrThrow({
+      where: { id: sourceId },
+      include: {
+        milestones: true,
+        tasks: { where: { deletedAt: null }, include: { subtasks: { orderBy: { sortOrder: "asc" } } }, orderBy: { sortOrder: "asc" } }
+      }
+    });
+    const shiftMs = (targetStart ?? new Date()).getTime() - (source.startDate ?? source.createdAt).getTime();
+    const shift = (d: Date | null) => (d ? new Date(d.getTime() + shiftMs) : null);
+
+    const milestoneIds = new Map<string, string>();
+    for (const m of source.milestones) {
+      const created = await prisma.milestone.create({ data: { projectId: targetId, name: m.name, dueDate: shift(m.dueDate) } });
+      milestoneIds.set(m.id, created.id);
+    }
+    for (const t of source.tasks) {
+      await prisma.task.create({
+        data: {
+          id: generateShortId(),
+          projectId: targetId,
+          title: t.title,
+          description: t.description,
+          priority: t.priority,
+          status: "TODO",
+          dueDate: shift(t.dueDate),
+          startDate: shift(t.startDate),
+          labels: t.labels,
+          estimateHours: t.estimateHours,
+          recurrence: t.recurrence,
+          sortOrder: t.sortOrder,
+          milestoneId: t.milestoneId ? milestoneIds.get(t.milestoneId) ?? null : null,
+          createdById: actorUserId,
+          assignees: { connect: [{ id: assigneeId }] },
+          subtasks: { create: t.subtasks.map((s) => ({ title: s.title, sortOrder: s.sortOrder })) }
+        }
+      });
+    }
+  }
+
+  // Per-project role (Owner/Manager/Contributor/Viewer) for one member
+  static async setMemberRole(projectId: string, memberId: string, role: MembershipRole, actorUserId: string, userRole: UserRole) {
+    await this.requireProjectRole(projectId, actorUserId, userRole, "manager");
+    const project = await prisma.project.findFirstOrThrow({ where: { id: projectId }, select: { managerId: true, name: true } });
+    if (memberId === actorUserId) {
+      throw new ApiError(400, "You cannot change your own project role");
+    }
+    if (memberId === project.managerId && role !== MEMBERSHIP_ROLE.MANAGER && role !== MEMBERSHIP_ROLE.OWNER) {
+      throw new ApiError(400, "The project manager must keep a manager role; assign a new manager first");
+    }
+    const updated = await prisma.projectMember.updateMany({
+      where: { projectId, userId: memberId, removedAt: null },
+      data: { role }
+    });
+    if (updated.count === 0) throw new ApiError(404, "Project member not found");
+
+    await ActivityService.log({
+      action: "PROJECT_UPDATED",
+      entityType: "project",
+      entityId: projectId,
+      description: `Changed a member's project role to ${role.toLowerCase()}`,
+      userId: actorUserId,
+      projectId,
+      metadata: { memberId, role }
+    });
+    const { tasks: _tasks, ...projectPayload } = await this.getById(projectId, actorUserId, userRole);
+    await this.broadcastProjectUpdate(projectId, projectPayload);
+    return { success: true };
+  }
+
+  // Create (milestoneId null) or update a milestone; project managers only
+  static async saveMilestone(
+    projectId: string,
+    milestoneId: string | null,
+    input: { name?: string; dueDate?: string | null },
+    actorUserId: string,
+    userRole: UserRole
+  ) {
+    await this.requireProjectRole(projectId, actorUserId, userRole, "manager");
+    const data = {
+      name: input.name,
+      dueDate: input.dueDate === undefined ? undefined : input.dueDate ? new Date(input.dueDate) : null
+    };
+    const milestone = milestoneId
+      ? await prisma.milestone.update({ where: { id: milestoneId, projectId }, data })
+      : await prisma.milestone.create({ data: { projectId, name: input.name!, dueDate: data.dueDate ?? null } });
+    socketService.emitToProject(projectId, "project_updated", { id: projectId });
+    return milestone;
+  }
+
+  static async deleteMilestone(projectId: string, milestoneId: string, actorUserId: string, userRole: UserRole) {
+    await this.requireProjectRole(projectId, actorUserId, userRole, "manager");
+    // Tasks keep existing; their milestone link clears (onDelete: SetNull)
+    await prisma.milestone.delete({ where: { id: milestoneId, projectId } });
+    socketService.emitToProject(projectId, "project_updated", { id: projectId });
+  }
+
+  // Recently deleted: projects and tasks soft-deleted in the last 30 days (company-wide managers only)
+  static async listTrash() {
+    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    const [projects, tasks] = await Promise.all([
+      prisma.project.findMany({
+        where: { deletedAt: { gte: since } },
+        orderBy: { deletedAt: "desc" },
+        select: { id: true, name: true, deletedAt: true, _count: { select: { tasks: true } } }
+      }),
+      prisma.task.findMany({
+        // Tasks of a deleted project come back with it, so list only tasks deleted on their own
+        where: { deletedAt: { gte: since }, project: { deletedAt: null } },
+        orderBy: { deletedAt: "desc" },
+        select: { id: true, title: true, deletedAt: true, project: { select: { id: true, name: true } } }
+      })
+    ]);
+    return { projects, tasks };
+  }
+
+  static async restore(projectId: string, actorUserId: string) {
+    const project = await prisma.project.findFirst({ where: { id: projectId, deletedAt: { not: null } } });
+    if (!project || !project.deletedAt) throw new ApiError(404, "Deleted project not found");
+
+    // archive() stamps the project, its tasks and its memberships with one timestamp; bring those back,
+    // but not tasks or members removed on their own earlier. The 1 s margin covers projects deleted by
+    // the older code, which stamped each part separately (milliseconds apart).
+    const from = new Date(project.deletedAt.getTime() - 1000);
+    const to = new Date(project.deletedAt.getTime() + 1000);
+    await prisma.$transaction([
+      prisma.project.update({ where: { id: projectId }, data: { deletedAt: null } }),
+      prisma.task.updateMany({ where: { projectId, deletedAt: { gte: from, lte: to } }, data: { deletedAt: null } }),
+      prisma.projectMember.updateMany({ where: { projectId, removedAt: { gte: from, lte: to } }, data: { removedAt: null } })
+    ]);
+    await ActivityService.log({
+      action: "PROJECT_UPDATED",
+      entityType: "project",
+      entityId: projectId,
+      description: `Restored project ${project.name}`,
+      userId: actorUserId,
+      projectId
+    });
     return { success: true };
   }
 }

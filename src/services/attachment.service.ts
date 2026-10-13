@@ -27,6 +27,18 @@ export class AttachmentService {
     throw new ApiError(400, "Attachment must belong to a project or task");
   }
 
+  // Before anything reaches storage: the uploader needs at least contributor rights in the project.
+  // Returns the project the file belongs to (a task's file always belongs to the task's own project).
+  static async assertCanUpload(input: { projectId?: string; taskId?: string; userId: string; role: UserRole }) {
+    let projectId = input.projectId;
+    if (input.taskId) {
+      projectId = (await TaskService.getById(input.taskId, input.userId, input.role)).projectId;
+    }
+    if (!projectId) throw new ApiError(400, "Attachment must belong to a project or task");
+    await ProjectService.requireProjectRole(projectId, input.userId, input.role, "contributor");
+    return projectId;
+  }
+
   static async list(filters: { projectId?: string; taskId?: string; userId: string; role: UserRole }) {
     await this.assertAttachmentAccess(filters);
 
@@ -114,7 +126,8 @@ export class AttachmentService {
       role
     });
 
-    if (!ProjectService.isManagerRole(role) && attachment.userId !== userId) {
+    const projectRole = attachment.projectId ? await ProjectService.projectRole(attachment.projectId, userId, role) : null;
+    if (projectRole !== "manager" && attachment.userId !== userId) {
       throw new ApiError(403, "You do not have permission to delete this attachment");
     }
 

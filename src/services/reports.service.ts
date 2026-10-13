@@ -91,17 +91,21 @@ export class ReportsService {
     const activeProjects = await prisma.project.findMany({
       where: { ...projectBaseWhere, status: PROJECT_STATUS.ACTIVE },
       include: {
-        tasks: { where: taskBaseWhere }
+        tasks: { where: taskBaseWhere, include: { timeEntries: { select: { minutes: true } } } }
       }
     });
 
     const projectProgress = activeProjects.map((p) => {
       const completedTasks = p.tasks.filter((t) => t.status === TASK_STATUS.DONE);
+      const loggedMinutes = p.tasks.reduce((s, t) => s + t.timeEntries.reduce((m, e) => m + e.minutes, 0), 0);
       return {
         name: p.name,
         completed: completedTasks.length,
         pending: p.tasks.length - completedTasks.length,
-        total: p.tasks.length
+        total: p.tasks.length,
+        // Estimated vs actual effort (hours, one decimal)
+        estimatedHours: Math.round(p.tasks.reduce((s, t) => s + (t.estimateHours ?? 0), 0) * 10) / 10,
+        loggedHours: Math.round((loggedMinutes / 60) * 10) / 10
       };
     });
 

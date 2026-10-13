@@ -37,6 +37,34 @@ export class ProjectController {
     return res.status(200).json(project);
   }
 
+  static async setMemberRole(req: Request, res: Response) {
+    const result = await ProjectService.setMemberRole(req.params.projectId, req.params.userId, req.body.role, req.user!.userId, req.user!.role);
+    return res.status(200).json(result);
+  }
+
+  static async trash(_req: Request, res: Response) {
+    return res.status(200).json(await ProjectService.listTrash());
+  }
+
+  static async restore(req: Request, res: Response) {
+    return res.status(200).json(await ProjectService.restore(req.params.projectId, req.user!.userId));
+  }
+
+  static async createMilestone(req: Request, res: Response) {
+    const milestone = await ProjectService.saveMilestone(req.params.projectId, null, req.body, req.user!.userId, req.user!.role);
+    return res.status(201).json(milestone);
+  }
+
+  static async updateMilestone(req: Request, res: Response) {
+    const milestone = await ProjectService.saveMilestone(req.params.projectId, req.params.milestoneId, req.body, req.user!.userId, req.user!.role);
+    return res.status(200).json(milestone);
+  }
+
+  static async deleteMilestone(req: Request, res: Response) {
+    await ProjectService.deleteMilestone(req.params.projectId, req.params.milestoneId, req.user!.userId, req.user!.role);
+    return res.status(204).send();
+  }
+
   static async removeMember(req: Request, res: Response) {
     const result = await ProjectService.removeMember(req.params.projectId, req.params.userId, req.user!.userId, req.user!.role);
     return res.status(200).json(result);

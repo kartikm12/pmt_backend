@@ -1,7 +1,35 @@
 import { z } from "zod";
 import { TASK_PRIORITY, TASK_STATUS } from "../constants/enums.js";
 
+// Shared by create and update: the 14 Oct planning fields
+const planningFields = {
+  startDate: z.string().datetime().nullable().optional(),
+  labels: z.array(z.string().trim().min(1).max(30)).max(10).optional(),
+  estimateHours: z.number().min(0).max(1000).nullable().optional(),
+  recurrence: z.enum(["DAILY", "WEEKLY", "MONTHLY"]).nullable().optional(),
+  milestoneId: z.string().min(1).nullable().optional(),
+  blockedByIds: z.array(z.string().min(1)).max(50).optional()
+};
+
+export const reorderSchema = z.object({
+  projectId: z.string().min(1),
+  status: z.nativeEnum(TASK_STATUS),
+  orderedIds: z.array(z.string().min(1)).min(1).max(1000)
+});
+
+export const subtaskSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  done: z.boolean().optional()
+});
+
+export const timeEntrySchema = z.object({
+  minutes: z.number().int().min(1, "Log at least one minute").max(24 * 60, "One entry can't be longer than a day"),
+  note: z.string().trim().max(500).optional(),
+  spentOn: z.string().datetime().optional()
+});
+
 export const createTaskSchema = z.object({
+  ...planningFields,
   title: z.string().trim().min(2).max(180),
   description: z.string().trim().min(1).max(4000),
   priority: z.nativeEnum(TASK_PRIORITY),
@@ -13,6 +41,7 @@ export const createTaskSchema = z.object({
 });
 
 export const updateTaskSchema = z.object({
+  ...planningFields,
   title: z.string().trim().min(2).max(180).optional(),
   description: z.string().trim().min(1).max(4000).optional(),
   priority: z.nativeEnum(TASK_PRIORITY).optional(),

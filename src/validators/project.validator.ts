@@ -8,7 +8,8 @@ export const createProjectSchema = z.object({
   startDate: z.string().datetime(),
   dueDate: z.string().datetime(),
   managerId: z.string().min(1),
-  memberIds: z.array(z.string()).min(1, "At least one project team member is required")
+  memberIds: z.array(z.string()).min(1, "At least one project team member is required"),
+  copyFromProjectId: z.string().min(1).optional()
 }).refine((p) => p.startDate <= p.dueDate, {
   message: "Start date must be on or before the end date",
   path: ["startDate"]
@@ -22,6 +23,15 @@ export const updateProjectSchema = z.object({
   dueDate: z.string().datetime().nullable().optional(),
   managerId: z.string().optional(),
   memberIds: z.array(z.string()).optional()
+});
+
+export const memberRoleSchema = z.object({
+  role: z.nativeEnum(MEMBERSHIP_ROLE)
+});
+
+export const milestoneSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  dueDate: z.string().datetime().nullable().optional()
 });
 
 export const assignMembersSchema = z.object({

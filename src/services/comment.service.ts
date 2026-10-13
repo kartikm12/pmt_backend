@@ -24,7 +24,8 @@ export class CommentService {
   }
 
   static async create(taskId: string, userId: string, role: UserRole, body: string) {
-    await TaskService.getById(taskId, userId, role);
+    const task = await TaskService.getById(taskId, userId, role);
+    await ProjectService.requireProjectRole(task.projectId, userId, role, "contributor"); // viewers read only
 
     // 1. Create the comment
     const commentRecord = await prisma.taskComment.create({
@@ -39,7 +40,8 @@ export class CommentService {
         user: { select: { id: true, fullName: true, avatarUrl: true } },
         task: {
           include: {
-            assignees: { select: { id: true } }
+            assignees: { select: { id: true } },
+            watchers: { select: { id: true } }
           }
         }
       }
@@ -77,6 +79,7 @@ export class CommentService {
       // Notifications
       const notifyUserIds = new Set([
         ...comment.task.assignees.map(a => a.id),
+        ...comment.task.watchers.map(w => w.id),
         ...mentionedUsers.map(u => u.id)
       ]);
 
@@ -133,11 +136,10 @@ export class CommentService {
       throw new ApiError(404, "Comment not found");
     }
 
-    await TaskService.getById(comment.task.id, userId, role);
+    const task = await TaskService.getById(comment.task.id, userId, role);
 
-    // FIX (HIGH #5): Managers and Admins can delete any comment (moderation).
-    // Regular users can only delete their own comments.
-    const isManager = ProjectService.isManagerRole(role);
+    // Managers of this project can delete any comment (moderation); others only their own
+    const isManager = (await ProjectService.projectRole(task.projectId, userId, role)) === "manager";
 
     if (!isManager && comment.userId !== userId) {
       throw new ApiError(403, "You do not have permission to delete this comment");

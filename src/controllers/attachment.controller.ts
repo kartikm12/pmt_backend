@@ -1,6 +1,5 @@
 import { Request, Response } from "express";
 import { AttachmentService } from "../services/attachment.service.js";
-import { TaskService } from "../services/task.service.js";
 import { ApiError } from "../utils/apiError.js";
 import fs from "fs";
 import path from "path";
@@ -20,14 +19,8 @@ export class AttachmentController {
       throw new ApiError(400, "No file uploaded");
     }
 
-    // Check access before anything reaches storage; a task's file always belongs to the task's own project
-    let finalProjectId = projectId;
-    if (taskId) {
-      const task = await TaskService.getById(taskId, user.userId, user.role as any);
-      finalProjectId = task.projectId;
-    } else {
-      await AttachmentService.assertAttachmentAccess({ projectId, userId: user.userId, role: user.role as any });
-    }
+    // Check access (and that viewers can't upload) before anything reaches storage
+    const finalProjectId = await AttachmentService.assertCanUpload({ projectId, taskId, userId: user.userId, role: user.role as any });
 
     const fileUrl = await StorageService.uploadFile(file.buffer, file.originalname, file.mimetype, 'attachments');
 
@@ -37,7 +30,7 @@ export class AttachmentController {
         url: fileUrl,
         fileType: file.mimetype,
         fileSize: file.size,
-        projectId: finalProjectId || null,
+        projectId: finalProjectId,
         taskId: taskId || null,
         userId: user.userId,
         role: user.role as any
