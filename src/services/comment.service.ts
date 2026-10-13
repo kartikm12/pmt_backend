@@ -95,7 +95,9 @@ export class CommentService {
             ? `${comment.user?.fullName || "A user"} mentioned you in a comment on task: ${comment.task.title}`
             : `${comment.user?.fullName || "A user"} commented on task: ${comment.task.title}`,
           projectId: comment.task.projectId,
-          taskId: comment.task.id
+          taskId: comment.task.id,
+          // Only real @mentions are emailed; every comment would be too many emails
+          email: isMentioned
         }).catch(err => console.error(`Notification failed for ${targetId}:`, err));
 
         socketService.emitToUser(targetId, "comment_added", {

@@ -21,6 +21,7 @@ export class UserService {
       phone?: string | null;
       title?: string | null;
       avatarUrl?: string | null;
+      emailNotifications?: boolean;
     }
   ) {
     const existingUser = await prisma.user.findFirst({
@@ -54,7 +55,8 @@ export class UserService {
         bio: input.bio === undefined ? undefined : input.bio,
         phone: input.phone === undefined ? undefined : input.phone,
         title: input.title === undefined ? undefined : input.title,
-        avatarUrl: input.avatarUrl === undefined ? undefined : input.avatarUrl
+        avatarUrl: input.avatarUrl === undefined ? undefined : input.avatarUrl,
+        emailNotifications: input.emailNotifications
       }
     });
 

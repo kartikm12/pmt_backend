@@ -9,6 +9,7 @@ import { ApiError } from "../utils/apiError.js";
 import { socketService } from "./socket.service.js";
 import { AuthService } from "./auth.service.js";
 import { ActivityService } from "./activity.service.js";
+import { MailService } from "../mail/mail.service.js";
 
 export class TeamService {
   static async list() {
@@ -72,6 +73,13 @@ export class TeamService {
       data: { pendingApproval: false, role, status: "ACTIVE" },
       omit: { passwordHash: true }
     });
+    void MailService.send({
+      to: user.email,
+      subject: "Your PMT account is approved",
+      heading: "You're in",
+      body: `Hi ${user.fullName},\n\n${actor.fullName ?? "A manager"} approved your account. You can sign in now with the email and password you signed up with.`,
+      button: { label: "Sign in", url: MailService.appUrl("/login") }
+    });
     await ActivityService.log({
       action: "TEAM_MEMBER_INVITED",
       entityType: "user",
@@ -130,6 +138,15 @@ export class TeamService {
       password: input.password,
       role: input.role,
       isInvited: true
+    });
+
+    // Welcome email. The temporary password is never emailed: the manager hands it over in person
+    void MailService.send({
+      to: registration.user.email,
+      subject: "You've been added to PMT",
+      heading: "Welcome to PMT",
+      body: `Hi ${registration.user.fullName},\n\nYou've been added to the team on PMT, Entro Labs' project tool. Your manager will give you a temporary password; sign in with this email address and change it in Settings.`,
+      button: { label: "Sign in", url: MailService.appUrl("/login") }
     });
 
     if (input.title) {

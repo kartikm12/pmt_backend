@@ -211,7 +211,8 @@ export class TaskService {
         title: "New Task Assigned",
         message: `A new task '${task.title}' has been assigned to you`,
         projectId: task.projectId,
-        taskId: task.id
+        taskId: task.id,
+        email: true
       });
       socketService.emitToUser(assigneeId, "task_assigned", { taskId: task.id, title: task.title, projectId: task.projectId });
     }
@@ -311,7 +312,8 @@ export class TaskService {
             title: "New Task Assigned",
             message: `You have been assigned to task: ${updatedTask.title}`,
             projectId: updatedTask.projectId,
-            taskId: taskId
+            taskId: taskId,
+            email: true
           }));
 
           socketService.emitToUser(assigneeId, "task_assigned", {

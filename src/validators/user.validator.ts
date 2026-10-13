@@ -8,7 +8,8 @@ export const updateMeSchema = z.object({
   phone: z.string().max(40).nullable().optional(),
   title: z.string().max(120).nullable().optional(),
   // Photos are set via the upload endpoint; this field can only clear one
-  avatarUrl: z.null().optional()
+  avatarUrl: z.null().optional(),
+  emailNotifications: z.boolean().optional()
 }).strict();
 
 export const updatePasswordSchema = z.object({

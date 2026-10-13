@@ -88,7 +88,9 @@ export class AuthService {
         userId: a.id,
         type: "SYSTEM",
         title: "Sign-up waiting for approval",
-        message: `${fullName} (${email}) signed up. Approve or reject them on the Team page.`
+        message: `${fullName} (${email}) signed up. Approve or reject them on the Team page.`,
+        email: true,
+        emailLink: "/team"
       }).catch((err) => console.error("Approval notification failed:", err));
     }
   }

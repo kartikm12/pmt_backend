@@ -4,3 +4,6 @@ dist
 *.log
 debug.json
 scratch/
+
+# local email outbox (written when RESEND_API_KEY is not set)
+mail-outbox.jsonl

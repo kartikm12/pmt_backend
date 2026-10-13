@@ -1,3 +1,4 @@
+import { MailService } from "../mail/mail.service.js";
 import { prisma } from "../prisma/client.js";
 import { NotificationType } from "@prisma/client";
 import { socketService } from "./socket.service.js";
@@ -28,17 +29,31 @@ export class NotificationService {
     });
   }
 
-  static async create(data: {
+  static async create(input: {
     userId: string;
     type: NotificationType;
     title: string;
     message: string;
     projectId?: string;
     taskId?: string;
+    // Also email it (sent in the background; the person can turn these off in Settings)
+    email?: boolean;
+    emailLink?: string;
   }) {
+    const { email, emailLink, ...data } = input;
     const notification = await prisma.notification.create({
       data
     });
+
+    if (email) {
+      const link = data.taskId ? `/tasks/${data.taskId}` : data.projectId ? `/projects/${data.projectId}` : emailLink ?? "/";
+      MailService.notify(data.userId, {
+        subject: data.title,
+        heading: data.title,
+        body: data.message,
+        button: { label: data.taskId ? "Open the task" : data.projectId ? "Open the project" : "Open PMT", url: MailService.appUrl(link) }
+      });
+    }
 
     // Emit Real-Time Event
     socketService.emitToUser(data.userId, "notification", {

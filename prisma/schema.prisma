@@ -100,6 +100,9 @@ model User {
   roleLocked      Boolean         @default(true)
   // Self sign-ups wait here until a manager approves them
   pendingApproval Boolean         @default(false)
+  // Assignment, due-date and mention emails (Settings → Notifications); account emails always go out
+  emailNotifications Boolean      @default(true)
+  passwordResetTokens PasswordResetToken[]
   status          UserStatus      @default(ACTIVE)
   lastLoginAt     DateTime?
   createdAt       DateTime        @default(now())
@@ -120,6 +123,19 @@ model User {
 
   @@index([role, deletedAt])
   @@index([status, deletedAt])
+}
+
+// "Forgot password" links: only a hash of the token is kept, each works once and expires
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model UserSession {

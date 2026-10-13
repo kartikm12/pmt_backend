@@ -41,7 +41,8 @@ export class ReminderService {
           title: "Task due soon",
           message: `'${task.title}' is due ${when}`,
           projectId: task.projectId,
-          taskId: task.id
+          taskId: task.id,
+          email: true
         });
         sent++;
       }
@@ -56,7 +57,8 @@ export class ReminderService {
           title: "Task overdue",
           message: `'${task.title}' was due on ${format(task.dueDate!, "MMM d")}`,
           projectId: task.projectId,
-          taskId: task.id
+          taskId: task.id,
+          email: true
         });
         sent++;
       }
