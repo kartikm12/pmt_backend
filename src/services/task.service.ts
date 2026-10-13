@@ -204,12 +204,17 @@ export class TaskService {
     if (isManager && input.projectId && input.projectId !== existingTask.projectId) {
       await ProjectService.assertProjectAccess(input.projectId, actorUserId, userRole as UserRole);
     }
-    if (input.assigneeIds) await ProjectService.assertActiveUsers(input.assigneeIds);
+    // People already on the task stay assignable even if suspended since; only new picks are checked
+    if (input.assigneeIds) await ProjectService.assertActiveUsers(input.assigneeIds, existingTask.assignees.map((a) => a.id));
 
     // Only stamp completion when the status actually changes; the edit form always resends the status,
     // which used to reset completedAt on every save and skew the leaderboard and reports
     const statusChanged = input.status !== undefined && input.status !== existingTask.status;
     const completedAt = !statusChanged ? undefined : input.status === TASK_STATUS.DONE ? new Date() : null;
+
+    // A new due date earns fresh "due soon" / "overdue" reminders
+    const newDue = input.dueDate === undefined ? undefined : input.dueDate ? new Date(input.dueDate) : null;
+    const dueChanged = newDue !== undefined && (newDue?.getTime() ?? null) !== (existingTask.dueDate?.getTime() ?? null);
 
     const updatedTask = await prisma.task.update({
       where: { id: taskId },
@@ -218,7 +223,8 @@ export class TaskService {
         description: input.description,
         priority: input.priority,
         status: input.status,
-        dueDate: input.dueDate === undefined ? undefined : input.dueDate ? new Date(input.dueDate) : null,
+        dueDate: newDue,
+        ...(dueChanged ? { dueSoonNotifiedAt: null, overdueNotifiedAt: null } : {}),
         projectId: input.projectId,
         assignees: input.assigneeIds === undefined ? undefined : {
           set: input.assigneeIds.map(id => ({ id }))
@@ -230,9 +236,11 @@ export class TaskService {
       }
     });
 
+    // Activity text is shown as-is in the UI, so use the same words as the board columns
+    const statusLabel: Record<string, string> = { TODO: "To Do", IN_PROGRESS: "In Progress", REVIEW: "Review", DONE: "Completed" };
     const description =
       input.status && input.status !== existingTask.status
-        ? `Changed task status to ${input.status}`
+        ? `Changed task status to ${statusLabel[input.status] ?? input.status}`
         : `Updated task ${updatedTask.title}`;
 
     await ActivityService.log({

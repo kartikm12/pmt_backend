@@ -3,6 +3,7 @@ import { app } from "./app.js";
 import { env } from "./config/env.js";
 import { prisma } from "./prisma/client.js";
 import { socketService } from "./services/socket.service.js";
+import { ReminderService } from "./services/reminder.service.js";
 
 async function bootstrap() {
   try {
@@ -42,9 +43,12 @@ async function bootstrap() {
       }
     }, SESSION_CLEANUP_INTERVAL);
 
+    const stopReminders = ReminderService.start();
+
     const shutdown = async () => {
       console.log("Shutting down gracefully...");
       clearInterval(sessionCleanupTimer);
+      stopReminders();
       httpServer.close();
       await prisma.$disconnect();
       process.exit(0);

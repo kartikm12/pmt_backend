@@ -147,16 +147,7 @@ export class TeamService {
 
     this.assertCanManage(actorRole, user.role);
 
-    const activeSessions = await prisma.userSession.findMany({
-      where: { userId, isActive: true },
-      select: { id: true }
-    });
-
     await prisma.$transaction([
-      prisma.userSession.updateMany({
-        where: { userId, isActive: true },
-        data: { isActive: false, revokedAt: new Date(), revokedReason: "USER_REMOVED" }
-      }),
       prisma.user.update({
         where: { id: userId },
         data: { deletedAt: new Date() }
@@ -175,12 +166,19 @@ export class TeamService {
       userId: actorUserId
     });
 
-    await socketService.forceLogoutSessions(
-      activeSessions.map((s) => s.id),
-      "Your account has been removed from the workspace."
-    );
+    await this.endSessions(userId, "USER_REMOVED", "Your account has been removed from the workspace.");
 
     return { success: true };
+  }
+
+  // Revoke every open session and push open tabs back to the login page with the reason
+  static async endSessions(userId: string, reason: string, message: string) {
+    const activeSessions = await prisma.userSession.findMany({ where: { userId, isActive: true }, select: { id: true } });
+    await prisma.userSession.updateMany({
+      where: { userId, isActive: true },
+      data: { isActive: false, revokedAt: new Date(), revokedReason: reason }
+    });
+    await socketService.forceLogoutSessions(activeSessions.map((s) => s.id), message);
   }
 
   static async update(
@@ -191,6 +189,7 @@ export class TeamService {
       fullName?: string;
       role?: UserRole;
       title?: string;
+      status?: "ACTIVE" | "SUSPENDED";
       projectId?: string;
       membershipRole?: MembershipRole;
     }
@@ -206,6 +205,9 @@ export class TeamService {
     if (userId === actorUserId && input.role && input.role !== user.role) {
       throw new ApiError(400, "You cannot change your own role");
     }
+    if (userId === actorUserId && input.status && input.status !== user.status) {
+      throw new ApiError(400, "You cannot suspend yourself");
+    }
     this.assertCanManage(actorRole, user.role, input.role);
     if (input.projectId) await this.assertProjectExists(input.projectId);
 
@@ -214,9 +216,14 @@ export class TeamService {
       data: {
         fullName: input.fullName,
         role: input.role,
-        title: input.title
+        title: input.title,
+        status: input.status
       }
     });
+
+    if (input.status === "SUSPENDED" && user.status !== "SUSPENDED") {
+      await this.endSessions(userId, "USER_SUSPENDED", "Your account has been suspended. Contact your manager.");
+    }
 
     if (input.projectId !== undefined) {
       // Remove from other projects if it's a "set" rather than "add"

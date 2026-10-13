@@ -19,13 +19,21 @@ export class ProjectService {
     return role === USER_ROLE.MANAGER || role === USER_ROLE.PROJECT_MANAGER || role === USER_ROLE.ADMIN;
   }
 
-  // Unknown or removed users would otherwise surface as a raw foreign-key 500
-  static async assertActiveUsers(userIds: string[]) {
+  // Unknown or removed users would otherwise surface as a raw foreign-key 500. Suspended people can't be
+  // newly added, but those `alreadyLinked` stay, so re-saving a form that still lists them keeps working.
+  static async assertActiveUsers(userIds: string[], alreadyLinked: string[] = []) {
     const unique = [...new Set(userIds)];
     if (unique.length === 0) return;
-    const found = await prisma.user.count({ where: { id: { in: unique }, deletedAt: null } });
-    if (found !== unique.length) {
+    const found = await prisma.user.findMany({
+      where: { id: { in: unique }, deletedAt: null },
+      select: { id: true, fullName: true, status: true }
+    });
+    if (found.length !== unique.length) {
       throw new ApiError(400, "One or more selected people are not active team members");
+    }
+    const suspended = found.filter((u) => u.status === "SUSPENDED" && !alreadyLinked.includes(u.id));
+    if (suspended.length) {
+      throw new ApiError(400, `${suspended.map((u) => u.fullName).join(", ")} is suspended and can't be added`);
     }
   }
 
@@ -334,7 +342,10 @@ export class ProjectService {
     const managerId = input.managerId ?? existingProject.managerId;
     // The project manager always stays on the team, even if the form left them out
     const memberIds = input.memberIds ? [...new Set([managerId, ...input.memberIds])] : undefined;
-    await this.assertActiveUsers([...(input.managerId ? [input.managerId] : []), ...(memberIds ?? [])]);
+    await this.assertActiveUsers(
+      [...(input.managerId ? [input.managerId] : []), ...(memberIds ?? [])],
+      [existingProject.managerId, ...existingProject.teamMemberIds]
+    );
 
     const startDate = input.startDate === undefined ? existingProject.startDate : input.startDate ? new Date(input.startDate) : null;
     const dueDate = input.dueDate === undefined ? existingProject.dueDate : input.dueDate ? new Date(input.dueDate) : null;
@@ -469,8 +480,8 @@ export class ProjectService {
     userRole: UserRole,
     input: { memberIds: string[]; role?: MembershipRole }
   ) {
-    await this.getById(projectId, actorUserId, userRole);
-    await this.assertActiveUsers(input.memberIds);
+    const current = await this.getById(projectId, actorUserId, userRole);
+    await this.assertActiveUsers(input.memberIds, current.teamMemberIds);
 
     const activeMembers = await prisma.projectMember.findMany({
       where: { projectId, removedAt: null },

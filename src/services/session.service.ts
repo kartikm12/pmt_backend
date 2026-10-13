@@ -81,7 +81,13 @@ export class SessionService {
     }
 
     if (!session.isActive) {
-      throw new ApiError(401, "Session expired. Logged in from another device.");
+      // Say why the session ended; "another device" is only true for a replaced login
+      const reasons: Record<string, string> = {
+        REPLACED_BY_NEW_LOGIN: "Session expired. Logged in from another device.",
+        USER_SUSPENDED: "Your account is suspended. Contact your manager.",
+        USER_REMOVED: "Your account has been removed from the workspace."
+      };
+      throw new ApiError(401, reasons[session.revokedReason ?? ""] ?? "Invalid or expired token");
     }
 
     if (session.expiresAt <= new Date()) {

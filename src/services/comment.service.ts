@@ -129,7 +129,7 @@ export class CommentService {
       }
     });
 
-    if (!comment) {
+    if (!comment || comment.deletedAt) {
       throw new ApiError(404, "Comment not found");
     }
 
@@ -147,5 +147,34 @@ export class CommentService {
       where: { id: commentId },
       data: { deletedAt: new Date() }
     });
+  }
+
+  // Only the author may reword a comment; managers can delete any comment but not put words in someone's mouth
+  static async update(commentId: string, userId: string, role: UserRole, body: string) {
+    const comment = await prisma.taskComment.findFirst({
+      where: { id: commentId, deletedAt: null },
+      select: { userId: true, taskId: true }
+    });
+    if (!comment) {
+      throw new ApiError(404, "Comment not found");
+    }
+
+    const task = await TaskService.getById(comment.taskId, userId, role);
+    if (comment.userId !== userId) {
+      throw new ApiError(403, "You can only edit your own comments");
+    }
+
+    const updated = await prisma.taskComment.update({
+      where: { id: commentId },
+      data: { body },
+      include: { user: { select: { id: true, fullName: true, avatarUrl: true } } }
+    });
+
+    socketService.emitToProject(task.projectId, "comment_updated", {
+      taskId: comment.taskId,
+      comment: { id: updated.id, body: updated.body, updatedAt: updated.updatedAt }
+    });
+
+    return updated;
   }
 }

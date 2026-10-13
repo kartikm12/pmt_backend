@@ -14,6 +14,11 @@ export class CommentController {
     return res.status(201).json(comment);
   }
 
+  static async update(req: Request, res: Response) {
+    const comment = await CommentService.update(req.params.commentId, req.user!.userId, req.user!.role as any, req.body.body);
+    return res.status(200).json(comment);
+  }
+
   static async remove(req: Request, res: Response) {
     await CommentService.remove(req.params.commentId, req.user!.userId, req.user!.role as any);
     return res.status(204).send();

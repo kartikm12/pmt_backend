@@ -39,4 +39,5 @@ taskRouter.delete("/:taskId", authorize(USER_ROLE.MANAGER, USER_ROLE.PROJECT_MAN
 // Task Comments
 taskRouter.get("/:taskId/comments", asyncHandler(CommentController.list));
 taskRouter.post("/:taskId/comments", validate(createCommentSchema), asyncHandler(CommentController.create));
+taskRouter.patch("/comments/:commentId", validate(createCommentSchema), asyncHandler(CommentController.update));
 taskRouter.delete("/comments/:commentId", asyncHandler(CommentController.remove));

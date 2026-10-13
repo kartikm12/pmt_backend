@@ -3,6 +3,7 @@ import { env } from "../config/env.js";
 import { USER_ROLE, type UserRole } from "../constants/enums.js";
 import { prisma } from "../prisma/client.js";
 import { ApiError } from "../utils/apiError.js";
+import { SUSPENDED_MESSAGE } from "../middleware/authenticate.js";
 import { ActivityService } from "./activity.service.js";
 import { SessionService } from "./session.service.js";
 import { socketService } from "./socket.service.js";
@@ -86,6 +87,11 @@ export class AuthService {
 
     if (!isPasswordValid) {
       throw new ApiError(401, "Invalid email or password");
+    }
+
+    // Checked after the password, so only the account owner learns the account is suspended
+    if (user.status === "SUSPENDED") {
+      throw new ApiError(403, SUSPENDED_MESSAGE);
     }
 
     const session = await SessionService.createSingleActiveSession(

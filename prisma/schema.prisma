@@ -189,6 +189,9 @@ model Task {
   startedAt     DateTime?
   completedAt   DateTime?
   sortOrder     Int          @default(0)
+  // When the one-off "due soon" / "overdue" reminders went out; cleared when the due date changes
+  dueSoonNotifiedAt DateTime?
+  overdueNotifiedAt DateTime?
   projectId     String
   createdById   String
   createdAt     DateTime     @default(now())
