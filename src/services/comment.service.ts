@@ -63,7 +63,7 @@ export class CommentService {
       }).catch(err => console.error("Activity log failed:", err));
 
       // Mentions logic
-      const allUsers = await prisma.user.findMany({ select: { id: true, fullName: true }, where: { deletedAt: null } });
+      const allUsers = await prisma.user.findMany({ select: { id: true, fullName: true }, where: { deletedAt: null, pendingApproval: false } });
       // Sort users by length of fullName descending to avoid partial matches
       allUsers.sort((a, b) => b.fullName.length - a.fullName.length);
       

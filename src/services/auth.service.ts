@@ -3,7 +3,8 @@ import { env } from "../config/env.js";
 import { USER_ROLE, type UserRole } from "../constants/enums.js";
 import { prisma } from "../prisma/client.js";
 import { ApiError } from "../utils/apiError.js";
-import { SUSPENDED_MESSAGE } from "../middleware/authenticate.js";
+import { PENDING_MESSAGE, SUSPENDED_MESSAGE } from "../middleware/authenticate.js";
+import { NotificationService } from "./notification.service.js";
 import { ActivityService } from "./activity.service.js";
 import { SessionService } from "./session.service.js";
 import { socketService } from "./socket.service.js";
@@ -37,7 +38,9 @@ export class AuthService {
       email: normalizedEmail,
       passwordHash,
       role: userCount === 0 ? USER_ROLE.MANAGER : input.role ?? USER_ROLE.TEAM_MEMBER,
-      roleLocked: input.isInvited ? true : false
+      roleLocked: input.isInvited ? true : false,
+      // The very first account runs the workspace; later self sign-ups need a manager's approval
+      pendingApproval: userCount > 0 && !input.isInvited
     };
 
     const user = canRevive
@@ -54,6 +57,11 @@ export class AuthService {
       userId: user.id
     });
 
+    if (data.pendingApproval) {
+      await this.notifyApprovers(user.fullName, user.email);
+      return { pending: true, message: PENDING_MESSAGE, user: { id: user.id, fullName: user.fullName, email: user.email }, token: null };
+    }
+
     const session = input.isInvited
       ? null
       : await SessionService.createSingleActiveSession(
@@ -67,6 +75,22 @@ export class AuthService {
         );
 
     return { user: { ...userWithoutPassword, roleLocked: (user as any).roleLocked }, token: session?.token ?? null };
+  }
+
+  // Every active company manager hears about a new sign-up
+  static async notifyApprovers(fullName: string, email: string) {
+    const approvers = await prisma.user.findMany({
+      where: { deletedAt: null, pendingApproval: false, status: { not: "SUSPENDED" }, role: { in: [USER_ROLE.MANAGER, USER_ROLE.PROJECT_MANAGER, USER_ROLE.ADMIN] } },
+      select: { id: true }
+    });
+    for (const a of approvers) {
+      await NotificationService.create({
+        userId: a.id,
+        type: "SYSTEM",
+        title: "Sign-up waiting for approval",
+        message: `${fullName} (${email}) signed up. Approve or reject them on the Team page.`
+      }).catch((err) => console.error("Approval notification failed:", err));
+    }
   }
 
   static async login(input: { email: string; password: string }, metadata?: { userAgent?: string; ipAddress?: string }) {
@@ -89,9 +113,12 @@ export class AuthService {
       throw new ApiError(401, "Invalid email or password");
     }
 
-    // Checked after the password, so only the account owner learns the account is suspended
+    // Checked after the password, so only the account owner learns the account is suspended or waiting
     if (user.status === "SUSPENDED") {
       throw new ApiError(403, SUSPENDED_MESSAGE);
+    }
+    if (user.pendingApproval) {
+      throw new ApiError(403, PENDING_MESSAGE);
     }
 
     const session = await SessionService.createSingleActiveSession(

@@ -96,6 +96,8 @@ model User {
   title           String?
   role            UserRole        @default(TEAM_MEMBER)
   roleLocked      Boolean         @default(true)
+  // Self sign-ups wait here until a manager approves them
+  pendingApproval Boolean         @default(false)
   status          UserStatus      @default(ACTIVE)
   lastLoginAt     DateTime?
   createdAt       DateTime        @default(now())

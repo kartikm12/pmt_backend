@@ -7,7 +7,8 @@ export class AuthController {
       userAgent: req.get("user-agent") ?? undefined,
       ipAddress: req.ip
     });
-    return res.status(201).json(result);
+    // 202: account saved but not usable yet (waiting for approval)
+    return res.status("pending" in result ? 202 : 201).json(result);
   }
 
   static async login(req: Request, res: Response) {

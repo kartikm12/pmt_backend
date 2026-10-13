@@ -11,6 +11,10 @@ export const inviteTeamMemberSchema = z.object({
   membershipRole: z.nativeEnum(MEMBERSHIP_ROLE).optional()
 });
 
+export const approveSignupSchema = z.object({
+  role: z.nativeEnum(USER_ROLE).default(USER_ROLE.TEAM_MEMBER)
+});
+
 export const updateTeamMemberSchema = z.object({
   fullName: z.string().trim().min(2).max(120).optional(),
   role: z.nativeEnum(USER_ROLE).optional(),

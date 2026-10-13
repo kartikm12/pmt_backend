@@ -5,6 +5,7 @@ import { prisma } from "../prisma/client.js";
 import { SessionService } from "../services/session.service.js";
 
 export const SUSPENDED_MESSAGE = "Your account is suspended. Contact your manager.";
+export const PENDING_MESSAGE = "Your account is waiting for a manager's approval. You can sign in once it's approved.";
 
 export async function authenticate(req: Request, _res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
@@ -27,7 +28,8 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
         fullName: true,
         email: true,
         role: true,
-        status: true
+        status: true,
+        pendingApproval: true
       }
     });
 
@@ -36,6 +38,9 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
     }
     if (user.status === "SUSPENDED") {
       return next(new ApiError(401, SUSPENDED_MESSAGE));
+    }
+    if (user.pendingApproval) {
+      return next(new ApiError(401, PENDING_MESSAGE));
     }
 
     req.user = {

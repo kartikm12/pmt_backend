@@ -1,6 +1,11 @@
 import { prisma } from "../prisma/client.js";
 import { TASK_STATUS, TASK_PRIORITY, PROJECT_STATUS } from "../constants/enums.js";
-import { subDays, startOfDay, isBefore, isAfter } from "date-fns";
+import { subDays, addDays, startOfDay, startOfToday, isBefore, isAfter } from "date-fns";
+
+// Deadlines are dates (stored as that day's 00:00): work is overdue only once the day is over,
+// and finishing any time on the due day counts as on time, as everywhere else in the app
+const isPastDue = (due: Date) => isBefore(due, startOfToday());
+const finishedInTime = (completedAt: Date, due: Date) => isBefore(completedAt, addDays(startOfDay(due), 1));
 
 export class LeaderboardService {
   static async getSnapshot(filters: { days?: number; projectId?: string } = {}) {
@@ -99,7 +104,7 @@ export class LeaderboardService {
       // --- Task Scoring ---
       user.assignedTasks.forEach(task => {
         const isDone = task.status === TASK_STATUS.DONE;
-        const isOverdue = !isDone && task.dueDate && isBefore(new Date(task.dueDate), new Date());
+        const isOverdue = !isDone && task.dueDate && isPastDue(new Date(task.dueDate));
 
         if (isDone && task.completedAt && isAfter(new Date(task.completedAt), startDate)) {
           completedTasks++;
@@ -107,7 +112,7 @@ export class LeaderboardService {
           score += 10; // Task completed: +10 pts
 
           // On-time check: +5 pts
-          if (task.dueDate && isBefore(new Date(task.completedAt), new Date(task.dueDate))) {
+          if (task.dueDate && finishedInTime(new Date(task.completedAt), new Date(task.dueDate))) {
             onTimeTasks++;
             score += 5;
           }
@@ -134,7 +139,7 @@ export class LeaderboardService {
       // --- Project Scoring (for Managers) ---
       user.managedProjects.forEach(project => {
         const isDone = project.status === PROJECT_STATUS.COMPLETED;
-        const isOverdue = !isDone && project.dueDate && isBefore(new Date(project.dueDate), new Date());
+        const isOverdue = !isDone && project.dueDate && isPastDue(new Date(project.dueDate));
 
         if (isDone) {
           totalProjects++;
@@ -143,7 +148,7 @@ export class LeaderboardService {
             score += 100; // Project completed: +100 pts
 
             // On-time bonus: +30 pts
-            if (project.dueDate && isBefore(new Date(project.completedAt), new Date(project.dueDate))) {
+            if (project.dueDate && finishedInTime(new Date(project.completedAt), new Date(project.dueDate))) {
               score += 30;
             }
           }

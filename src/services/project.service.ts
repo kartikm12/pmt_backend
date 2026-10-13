@@ -28,7 +28,7 @@ export class ProjectService {
     const unique = [...new Set(userIds)];
     if (unique.length === 0) return;
     const found = await prisma.user.findMany({
-      where: { id: { in: unique }, deletedAt: null },
+      where: { id: { in: unique }, deletedAt: null, pendingApproval: false },
       select: { id: true, fullName: true, status: true }
     });
     if (found.length !== unique.length) {

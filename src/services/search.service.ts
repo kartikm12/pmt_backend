@@ -37,7 +37,7 @@ export class SearchService {
         take: LIMIT
       }),
       prisma.user.findMany({
-        where: { deletedAt: null, OR: [{ fullName: contains }, { email: contains }, { title: contains }] },
+        where: { deletedAt: null, pendingApproval: false, OR: [{ fullName: contains }, { email: contains }, { title: contains }] },
         select: { id: true, fullName: true, email: true, title: true, avatarUrl: true },
         orderBy: { fullName: "asc" },
         take: LIMIT
@@ -51,7 +51,7 @@ export class SearchService {
     const today = startOfToday();
     const weekStart = startOfWeek(today, { weekStartsOn: 1 });
     const users = await prisma.user.findMany({
-      where: { deletedAt: null, status: { not: "SUSPENDED" } },
+      where: { deletedAt: null, pendingApproval: false, status: { not: "SUSPENDED" } },
       select: {
         id: true,
         fullName: true,

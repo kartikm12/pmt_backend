@@ -13,7 +13,7 @@ import { ActivityService } from "./activity.service.js";
 export class TeamService {
   static async list() {
     const users = await prisma.user.findMany({
-      where: { deletedAt: null },
+      where: { deletedAt: null, pendingApproval: false },
       orderBy: { createdAt: "desc" },
       omit: { passwordHash: true },
       include: {
@@ -47,6 +47,51 @@ export class TeamService {
       const mergedMemberships = Array.from(projectMap.values()).map(p => ({ project: p }));
       const { assignedTasks, ...rest } = user;
       return { ...rest, memberships: mergedMemberships };
+    });
+  }
+
+  static async listPending() {
+    return prisma.user.findMany({
+      where: { deletedAt: null, pendingApproval: true },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, fullName: true, email: true, createdAt: true }
+    });
+  }
+
+  static async findPending(userId: string) {
+    const user = await prisma.user.findFirst({ where: { id: userId, deletedAt: null, pendingApproval: true } });
+    if (!user) throw new ApiError(404, "This sign-up was already handled or no longer exists");
+    return user;
+  }
+
+  static async approve(userId: string, role: UserRole, actor: { userId: string; role: UserRole; fullName?: string }) {
+    const user = await this.findPending(userId);
+    this.assertCanManage(actor.role, undefined, role);
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: { pendingApproval: false, role, status: "ACTIVE" },
+      omit: { passwordHash: true }
+    });
+    await ActivityService.log({
+      action: "TEAM_MEMBER_INVITED",
+      entityType: "user",
+      entityId: user.id,
+      description: `${actor.fullName ?? "A manager"} approved ${user.fullName}'s sign-up`,
+      userId: actor.userId
+    });
+    return updated;
+  }
+
+  // A rejected sign-up never used the app, so it is removed outright and the email can apply again
+  static async reject(userId: string, actor: { userId: string; fullName?: string }) {
+    const user = await this.findPending(userId);
+    await prisma.user.delete({ where: { id: user.id } });
+    await ActivityService.log({
+      action: "TEAM_MEMBER_REMOVED",
+      entityType: "user",
+      entityId: user.id,
+      description: `${actor.fullName ?? "A manager"} rejected ${user.fullName}'s sign-up (${user.email})`,
+      userId: actor.userId
     });
   }
 
