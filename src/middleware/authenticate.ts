@@ -18,20 +18,22 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
 
   try {
     const payload = verifyAccessToken(token);
-    await SessionService.validateActiveSession(payload.sessionId, payload.userId);
-    
-    // Fetch latest user data from DB to ensure roles/permissions are instant
-    const user = await prisma.user.findFirst({
-      where: { id: payload.userId, deletedAt: null },
-      select: {
-        id: true,
-        fullName: true,
-        email: true,
-        role: true,
-        status: true,
-        pendingApproval: true
-      }
-    });
+    // Session check and fresh user data (so role changes apply at once) run side by side: this middleware
+    // fronts every request, and each sequential database trip costs ~160 ms on the live hosting
+    const [, user] = await Promise.all([
+      SessionService.validateActiveSession(payload.sessionId, payload.userId),
+      prisma.user.findFirst({
+        where: { id: payload.userId, deletedAt: null },
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          role: true,
+          status: true,
+          pendingApproval: true
+        }
+      })
+    ]);
 
     if (!user) {
       return next(new ApiError(401, "User no longer exists"));

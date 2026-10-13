@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import {
   MEMBERSHIP_ROLE,
   PROJECT_STATUS,
@@ -110,6 +111,25 @@ export class ProjectService {
     if (!project) {
       throw new ApiError(404, "Project not found");
     }
+  }
+
+  // Every dated milestone the person can see, in one query (the Calendar used to fetch each project)
+  static async listMilestones(userId: string, role: UserRole) {
+    const projectWhere = this.isManagerRole(role)
+      ? { deletedAt: null }
+      : {
+          deletedAt: null,
+          OR: [
+            { members: { some: { userId, removedAt: null } } },
+            { tasks: { some: { deletedAt: null, assignees: { some: { id: userId } } } } }
+          ]
+        };
+    const rows = await prisma.milestone.findMany({
+      where: { dueDate: { not: null }, project: projectWhere },
+      select: { id: true, name: true, dueDate: true, projectId: true, project: { select: { name: true } } },
+      orderBy: { dueDate: "asc" }
+    });
+    return rows.map(({ project, ...m }) => ({ ...m, projectName: project.name }));
   }
 
   // shortcut: the UI has no paging and reads one page, so the page is large; add paging to the UI past ~1000 projects
@@ -632,20 +652,30 @@ export class ProjectService {
     const shiftMs = (targetStart ?? new Date()).getTime() - (source.startDate ?? source.createdAt).getTime();
     const shift = (d: Date | null) => (d ? new Date(d.getTime() + shiftMs) : null);
 
-    const milestoneIds = new Map<string, string>();
-    for (const m of source.milestones) {
-      const created = await prisma.milestone.create({ data: { projectId: targetId, name: m.name, dueDate: shift(m.dueDate) } });
-      milestoneIds.set(m.id, created.id);
-    }
-    for (const t of source.tasks) {
-      await prisma.task.create({
-        data: {
-          id: generateShortId(),
+    // Bulk inserts with ids chosen up front, in one transaction: a 200-task template used to cost 400+
+    // sequential database trips (~160 ms each live); now it's a handful, and it lands all-or-nothing
+    const milestoneIds = new Map(source.milestones.map((m) => [m.id, randomUUID()]));
+    const taskIds = new Set<string>();
+    const newTaskId = () => {
+      let id = generateShortId();
+      while (taskIds.has(id)) id = generateShortId();
+      taskIds.add(id);
+      return id;
+    };
+    const tasks = source.tasks.map((t) => ({ source: t, id: newTaskId() }));
+
+    await prisma.$transaction([
+      prisma.milestone.createMany({
+        data: source.milestones.map((m) => ({ id: milestoneIds.get(m.id)!, projectId: targetId, name: m.name, dueDate: shift(m.dueDate) }))
+      }),
+      prisma.task.createMany({
+        data: tasks.map(({ source: t, id }) => ({
+          id,
           projectId: targetId,
           title: t.title,
           description: t.description,
           priority: t.priority,
-          status: "TODO",
+          status: "TODO" as const,
           dueDate: shift(t.dueDate),
           startDate: shift(t.startDate),
           labels: t.labels,
@@ -653,12 +683,15 @@ export class ProjectService {
           recurrence: t.recurrence,
           sortOrder: t.sortOrder,
           milestoneId: t.milestoneId ? milestoneIds.get(t.milestoneId) ?? null : null,
-          createdById: actorUserId,
-          assignees: { connect: [{ id: assigneeId }] },
-          subtasks: { create: t.subtasks.map((s) => ({ title: s.title, sortOrder: s.sortOrder })) }
-        }
-      });
-    }
+          createdById: actorUserId
+        }))
+      }),
+      prisma.subtask.createMany({
+        data: tasks.flatMap(({ source: t, id }) => t.subtasks.map((st) => ({ taskId: id, title: st.title, sortOrder: st.sortOrder })))
+      }),
+      // Implicit many-to-many table: "A" is the task, "B" the user (see the multi-assignee migration)
+      prisma.$executeRaw`INSERT INTO "_TaskAssignees" ("A", "B") SELECT unnest(${[...taskIds]}::text[]), ${assigneeId}`
+    ]);
   }
 
   // Per-project role (Owner/Manager/Contributor/Viewer) for one member

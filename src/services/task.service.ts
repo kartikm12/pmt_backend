@@ -103,6 +103,7 @@ export class TaskService {
       include: {
         assignees: userSummary,
         watchers: userSummary,
+        createdBy: { select: { id: true, fullName: true } },
         project: {
           select: { id: true, name: true, slug: true, status: true }
         },
@@ -287,7 +288,10 @@ export class TaskService {
       ? `Changed task status to ${STATUS_LABEL[input.status!] ?? input.status}`
       : `Updated task ${updatedTask.title}`;
 
-    await ActivityService.log({
+    // After the save, the log entry and notifications don't depend on each other: they go out together
+    // (each sequential database trip costs ~160 ms on the live hosting)
+    const sideEffects: Promise<unknown>[] = [];
+    sideEffects.push(ActivityService.log({
       action: statusChanged ? "TASK_STATUS_CHANGED" : "TASK_UPDATED",
       entityType: "task",
       entityId: taskId,
@@ -296,19 +300,19 @@ export class TaskService {
       projectId: updatedTask.projectId,
       taskId,
       metadata: input
-    });
+    }));
 
     if (input.assigneeIds) {
       for (const assigneeId of input.assigneeIds) {
         if (!existingTask.assignees.some(a => a.id === assigneeId)) {
-          await NotificationService.create({
+          sideEffects.push(NotificationService.create({
             userId: assigneeId,
             type: "TASK_ASSIGNED",
             title: "New Task Assigned",
             message: `You have been assigned to task: ${updatedTask.title}`,
             projectId: updatedTask.projectId,
             taskId: taskId
-          });
+          }));
 
           socketService.emitToUser(assigneeId, "task_assigned", {
             taskId: taskId,
@@ -321,19 +325,19 @@ export class TaskService {
     }
 
     // Watchers hear about status changes (assignees already follow the task on their own)
-    if (statusChanged) {
-      const actor = await prisma.user.findUnique({ where: { id: actorUserId }, select: { fullName: true } });
-      for (const w of existingTask.watchers) {
-        if (w.id === actorUserId) continue;
-        await NotificationService.create({
+    const watchers = existingTask.watchers.filter((w) => w.id !== actorUserId);
+    if (statusChanged && watchers.length) {
+      sideEffects.push((async () => {
+        const actor = await prisma.user.findUnique({ where: { id: actorUserId }, select: { fullName: true } });
+        await Promise.all(watchers.map((w) => NotificationService.create({
           userId: w.id,
           type: "SYSTEM",
           title: "Task updated",
           message: `${actor?.fullName ?? "Someone"} moved '${updatedTask.title}' to ${STATUS_LABEL[updatedTask.status]}`,
           projectId: updatedTask.projectId,
           taskId
-        });
-      }
+        })));
+      })());
     }
 
     // Emit Real-Time Event for Project Room
@@ -371,10 +375,12 @@ export class TaskService {
     });
 
     if (statusChanged && updatedTask.status === TASK_STATUS.DONE && updatedTask.recurrence && !updatedTask.nextOccurrenceId) {
-      await this.spawnNextOccurrence(taskId, actorUserId);
+      sideEffects.push(this.spawnNextOccurrence(taskId, actorUserId));
     }
 
-    return this.getById(taskId, actorUserId, userRole as UserRole);
+    // The fresh copy for the reply doesn't need the side effects, so it loads alongside them
+    const [fresh] = await Promise.all([this.getById(taskId, actorUserId, userRole as UserRole), ...sideEffects]);
+    return fresh;
   }
 
   // Recurring task finished: create the next one (once; nextOccurrenceId guards re-completing)

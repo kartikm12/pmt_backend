@@ -27,7 +27,9 @@ export class DashboardService {
       pendingTasksCount,
       completedTasksCount,
       totalTasksCount,
-      overdueTasksCount
+      overdueTasksCount,
+      recentTasks,
+      upcomingDeadlines
     ] = await Promise.all([
       prisma.project.count({ where: { status: PROJECT_STATUS.ACTIVE, ...projectWhere } }),
       prisma.project.count({ where: projectWhere }),
@@ -42,30 +44,28 @@ export class DashboardService {
           dueDate: { lt: startOfToday() },
           ...taskWhere
         }
+      }),
+      prisma.task.findMany({
+        where: taskWhere,
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        include: {
+          project: { select: { id: true, name: true } }
+        }
+      }),
+      prisma.task.findMany({
+        where: {
+          status: { not: TASK_STATUS.DONE },
+          dueDate: { gte: startOfToday() },
+          ...taskWhere
+        },
+        orderBy: { dueDate: "asc" },
+        take: 5,
+        include: {
+          project: { select: { id: true, name: true } }
+        }
       })
     ]);
-
-    const recentTasks = await prisma.task.findMany({
-      where: taskWhere,
-      orderBy: { createdAt: "desc" },
-      take: 5,
-      include: {
-        project: { select: { id: true, name: true } }
-      }
-    });
-
-    const upcomingDeadlines = await prisma.task.findMany({
-      where: {
-        status: { not: TASK_STATUS.DONE },
-        dueDate: { gte: startOfToday() },
-        ...taskWhere
-      },
-      orderBy: { dueDate: "asc" },
-      take: 5,
-      include: {
-        project: { select: { id: true, name: true } }
-      }
-    });
 
     return {
       stats: {

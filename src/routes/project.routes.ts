@@ -21,6 +21,7 @@ projectRouter.use(authenticate);
 projectRouter.get("/", asyncHandler(ProjectController.list));
 // Before "/:projectId", which would otherwise swallow "trash"
 projectRouter.get("/trash", companyManagers, asyncHandler(ProjectController.trash));
+projectRouter.get("/milestones", asyncHandler(ProjectController.milestones));
 projectRouter.get("/:projectId", asyncHandler(ProjectController.getById));
 projectRouter.get("/:projectId/bundle", asyncHandler(ProjectController.getBundle));
 projectRouter.post("/", companyManagers, validate(createProjectSchema), asyncHandler(ProjectController.create));

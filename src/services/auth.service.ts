@@ -131,23 +131,24 @@ export class AuthService {
       metadata
     );
 
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { lastLoginAt: new Date() }
-    });
-
-    await ActivityService.log({
-      action: "USER_LOGGED_IN",
-      entityType: "user",
-      entityId: user.id,
-      description: `${user.fullName} logged in`,
-      userId: user.id
-    });
-
-    await socketService.forceLogoutSessions(
-      session.replacedSessionIds,
-      "Your account was logged in from another device."
-    );
+    // Independent bookkeeping, done side by side (each database trip costs ~160 ms live)
+    await Promise.all([
+      prisma.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() }
+      }),
+      ActivityService.log({
+        action: "USER_LOGGED_IN",
+        entityType: "user",
+        entityId: user.id,
+        description: `${user.fullName} logged in`,
+        userId: user.id
+      }),
+      socketService.forceLogoutSessions(
+        session.replacedSessionIds,
+        "Your account was logged in from another device."
+      )
+    ]);
 
     return {
       token: session.token,

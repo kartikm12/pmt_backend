@@ -50,16 +50,75 @@ export class ReportsService {
     const startRange = days[0].start;
     const endRange = days[days.length - 1].end;
 
-    const tasksInRange = await prisma.task.findMany({
-      where: {
-        ...taskBaseWhere,
-        OR: [
-          { createdAt: { gte: startRange, lte: endRange } },
-          { completedAt: { gte: startRange, lte: endRange } }
-        ]
-      },
-      select: { status: true, createdAt: true, completedAt: true }
-    });
+    // All independent reads go out together (Prisma queries start when awaited): each sequential
+    // database trip costs ~160 ms on the live hosting
+    const [
+      tasksInRange,
+      statusCounts,
+      activeProjects,
+      overdueTasksDb,
+      allRelevantTasks,
+      recentActivity,
+      activeProjectCount,
+      totalCompletedTasks,
+      totalPendingTasks,
+      totalOverdueTasks
+    ] = await Promise.all([
+      prisma.task.findMany({
+        where: {
+          ...taskBaseWhere,
+          OR: [
+            { createdAt: { gte: startRange, lte: endRange } },
+            { completedAt: { gte: startRange, lte: endRange } }
+          ]
+        },
+        select: { status: true, createdAt: true, completedAt: true }
+      }),
+      prisma.task.groupBy({
+        by: ["status"],
+        where: taskBaseWhere,
+        _count: true
+      }),
+      prisma.project.findMany({
+        where: { ...projectBaseWhere, status: PROJECT_STATUS.ACTIVE },
+        include: {
+          tasks: { where: taskBaseWhere, include: { timeEntries: { select: { minutes: true } } } }
+        }
+      }),
+      prisma.task.findMany({
+        where: {
+          ...taskBaseWhere,
+          status: { not: TASK_STATUS.DONE },
+          dueDate: { lt: startOfToday() }
+        },
+        include: {
+          assignees: { select: { fullName: true, avatarUrl: true } }
+        },
+        orderBy: { dueDate: 'asc' },
+        take: 10
+      }),
+      prisma.task.findMany({
+        where: taskBaseWhere,
+        include: {
+          assignees: { select: { id: true, fullName: true, avatarUrl: true } }
+        }
+      }),
+      prisma.activityLog.findMany({
+        where: activityBaseWhere,
+        include: {
+          user: { select: { fullName: true, avatarUrl: true } }
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 10
+      }),
+      prisma.project.count({ where: { ...projectBaseWhere, status: PROJECT_STATUS.ACTIVE } }),
+      prisma.task.count({ where: { ...taskBaseWhere, status: TASK_STATUS.DONE } }),
+      prisma.task.count({ where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE } } }),
+      prisma.task.count({
+        where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } }
+      })
+    ]);
+
 
     const trends = days.map((day) => {
       let created = 0;
@@ -76,11 +135,6 @@ export class ReportsService {
     });
 
     // 2. Tasks by Status
-    const statusCounts = await prisma.task.groupBy({
-      by: ["status"],
-      where: taskBaseWhere,
-      _count: true
-    });
 
     const statusData = statusCounts.map((item) => ({
       name: item.status,
@@ -88,12 +142,6 @@ export class ReportsService {
     }));
 
     // 3. Project Progress
-    const activeProjects = await prisma.project.findMany({
-      where: { ...projectBaseWhere, status: PROJECT_STATUS.ACTIVE },
-      include: {
-        tasks: { where: taskBaseWhere, include: { timeEntries: { select: { minutes: true } } } }
-      }
-    });
 
     const projectProgress = activeProjects.map((p) => {
       const completedTasks = p.tasks.filter((t) => t.status === TASK_STATUS.DONE);
@@ -110,18 +158,6 @@ export class ReportsService {
     });
 
     // 4. Overdue Tasks
-    const overdueTasksDb = await prisma.task.findMany({
-      where: {
-        ...taskBaseWhere,
-        status: { not: TASK_STATUS.DONE },
-        dueDate: { lt: startOfToday() }
-      },
-      include: {
-        assignees: { select: { fullName: true, avatarUrl: true } }
-      },
-      orderBy: { dueDate: 'asc' },
-      take: 10
-    });
     
     const overdueTasks = overdueTasksDb.map(t => ({
       id: t.id,
@@ -133,12 +169,6 @@ export class ReportsService {
 
     // 5. Team Workload & Performance
     // To get per-user stats, we need to find assignees within the filtered tasks
-    const allRelevantTasks = await prisma.task.findMany({
-      where: taskBaseWhere,
-      include: {
-        assignees: { select: { id: true, fullName: true, avatarUrl: true } }
-      }
-    });
 
     const userStatsMap = new Map<string, { user: any, completed: number, inProgress: number, total: number }>();
     
@@ -167,23 +197,9 @@ export class ReportsService {
     })).sort((a, b) => b.taskCount - a.taskCount);
 
     // 6. Recent Activity
-    const recentActivity = await prisma.activityLog.findMany({
-      where: activityBaseWhere,
-      include: {
-        user: { select: { fullName: true, avatarUrl: true } }
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 10
-    });
 
     // 7. KPIs overview
     // The card is labelled "Active Projects"; the overdue list above is capped at 10, so count separately
-    const activeProjectCount = await prisma.project.count({ where: { ...projectBaseWhere, status: PROJECT_STATUS.ACTIVE } });
-    const totalCompletedTasks = await prisma.task.count({ where: { ...taskBaseWhere, status: TASK_STATUS.DONE } });
-    const totalPendingTasks = await prisma.task.count({ where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE } } });
-    const totalOverdueTasks = await prisma.task.count({
-      where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } }
-    });
 
     return {
       kpis: {

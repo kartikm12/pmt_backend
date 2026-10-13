@@ -1,5 +1,7 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  // One SQL query per request tree instead of one per related list: each database trip costs ~160 ms live
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {

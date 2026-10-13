@@ -2,6 +2,10 @@ import type { Request, Response } from "express";
 import { ProjectService } from "../services/project.service.js";
 
 export class ProjectController {
+  static async milestones(req: Request, res: Response) {
+    return res.status(200).json(await ProjectService.listMilestones(req.user!.userId, req.user!.role as any));
+  }
+
   static async list(req: Request, res: Response) {
     const projects = await ProjectService.list(req.user!.userId, req.user!.role as any);
     return res.status(200).json(projects);
