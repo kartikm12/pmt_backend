@@ -10,6 +10,8 @@ import { apiRouter } from "./routes/index.js";
 import { globalRateLimiter } from "./middleware/rateLimit.js";
 
 export const app = express();
+// Rate limits are per user IP; behind the hosting proxy that IP comes from X-Forwarded-For
+app.set("trust proxy", env.TRUST_PROXY);
 
 app.use(
   cors({

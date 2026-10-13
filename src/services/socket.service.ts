@@ -13,7 +13,30 @@ export class SocketService {
   private userSockets: Map<string, string[]> = new Map(); // userId -> socketIds[]
   private sessionSockets: Map<string, string[]> = new Map(); // sessionId -> socketIds[]
 
+  private memoryHits: Map<string, number[]> = new Map(); // `${userId}:${bucket}` -> recent event times
+  private memoryPenalty: Map<string, number> = new Map(); // userId -> blocked until (ms)
+
   private constructor() {}
+
+  // Same rule as the Redis limiter: 30 events / 10 s per user, 10 per event type, then a 60 s penalty
+  private memoryRateLimit(userId: string, event: string): "ok" | "limited" | "penalty" {
+    const now = Date.now();
+    if ((this.memoryPenalty.get(userId) ?? 0) > now) return "penalty";
+    const count = (key: string) => {
+      const hits = (this.memoryHits.get(key) ?? []).filter((t) => t > now - 10000);
+      hits.push(now);
+      this.memoryHits.set(key, hits);
+      return hits.length;
+    };
+    // Clients pick event names freely; only known ones get their own bucket so the map can't grow without bound
+    const bucket = event === "join_project" || event === "leave_project" ? event : "other";
+    if (count(`${userId}:all`) > 30 || count(`${userId}:${bucket}`) > 10) {
+      this.memoryPenalty.set(userId, now + 60000);
+      console.warn(`[WS_RATE_LIMIT] User ${userId} exceeded limit (event: ${event}) - memory limiter`);
+      return "limited";
+    }
+    return "ok";
+  }
 
   public static getInstance(): SocketService {
     if (!SocketService._instance) {
@@ -76,7 +99,17 @@ export class SocketService {
 
       // Layered Rate Limiting Middleware (Global + Per-Event)
       socket.use(async ([event, ..._args], next) => {
-        if (!redis) return next();
+        // Without Redis the same limits apply from memory (single server); before, they were skipped entirely
+        if (!redis) {
+          const verdict = this.memoryRateLimit(userId, String(event));
+          if (verdict === "ok") return next();
+          socket.emit("error", {
+            message: verdict === "penalty"
+              ? "Too many requests. Temporary suspension in effect."
+              : "Rate limit exceeded. Temporary suspension applied."
+          });
+          return; // Drop event
+        }
         try {
           const now = Date.now();
           const windowMs = 10000; // 10 second sliding window

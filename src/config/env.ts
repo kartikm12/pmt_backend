@@ -11,7 +11,10 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default("7d"),
   CLIENT_URL: z.string().url().default("http://localhost:3000"),
   BCRYPT_ROUNDS: z.coerce.number().int().min(8).max(15).default(10),
-  REDIS_URL: z.string().url().optional()
+  REDIS_URL: z.string().url().optional(),
+  // Proxy hops in front of the app (Render's load balancer = 1). Without it every user shares the proxy's IP,
+  // so one person hitting a rate limit blocks everyone. Set 0 only when the app is reached directly.
+  TRUST_PROXY: z.coerce.number().int().min(0).default(1)
 }).refine(data => {
   const weakSecrets = [
     "your_super_secret_jwt_key_change_in_production",
