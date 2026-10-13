@@ -23,7 +23,7 @@ export class TaskController {
   }
 
   static async remove(req: Request, res: Response) {
-    const result = await TaskService.remove(req.params.taskId, req.user!.userId);
+    const result = await TaskService.remove(req.params.taskId, req.user!.userId, req.user!.role as any);
     return res.status(200).json(result);
   }
 }

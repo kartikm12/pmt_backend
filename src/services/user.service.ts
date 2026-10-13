@@ -41,7 +41,8 @@ export class UserService {
       });
 
       if (emailTaken) {
-        throw new ApiError(409, `Email [${input.email}] is already in use by [${emailTaken.fullName}] (ID: ${emailTaken.id})`);
+        // FIX (HIGH #6): Do NOT leak other user's name or ID in the error message.
+        throw new ApiError(409, "Email is already in use");
       }
     }
 

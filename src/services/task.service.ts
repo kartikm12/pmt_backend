@@ -193,6 +193,11 @@ export class TaskService {
       // Strip everything except status
       input = { status: input.status };
     }
+
+    // FIX (HIGH #2): Verify actor has access to the destination project when moving a task.
+    if (isManager && input.projectId && input.projectId !== existingTask.projectId) {
+      await ProjectService.assertProjectAccess(input.projectId, actorUserId, userRole as UserRole);
+    }
     const completedAt =
       input.status === undefined
         ? undefined
@@ -299,8 +304,10 @@ export class TaskService {
     return this.getById(taskId);
   }
 
-  static async remove(taskId: string, actorUserId: string) {
-    const task = await this.getById(taskId);
+  static async remove(taskId: string, actorUserId: string, actorRole: UserRole) {
+    // FIX (HIGH #3): Use getById with userId + role so access is enforced at the service level
+    // even if someone somehow bypasses route middleware.
+    const task = await this.getById(taskId, actorUserId, actorRole);
 
     await prisma.task.update({
       where: { id: taskId },

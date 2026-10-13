@@ -5,6 +5,7 @@ import { socketService } from "./socket.service.js";
 import { NotificationService } from "./notification.service.js";
 import type { UserRole } from "../constants/enums.js";
 import { TaskService } from "./task.service.js";
+import { ProjectService } from "./project.service.js";
 import { ApiError } from "../utils/apiError.js";
 
 export class CommentService {
@@ -134,7 +135,11 @@ export class CommentService {
 
     await TaskService.getById(comment.task.id, userId, role);
 
-    if (comment.userId !== userId) {
+    // FIX (HIGH #5): Managers and Admins can delete any comment (moderation).
+    // Regular users can only delete their own comments.
+    const isManager = ProjectService.isManagerRole(role);
+
+    if (!isManager && comment.userId !== userId) {
       throw new ApiError(403, "You do not have permission to delete this comment");
     }
 
