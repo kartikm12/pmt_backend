@@ -102,6 +102,7 @@ export class TaskService {
         })
       },
       include: {
+        _count: { select: { attachments: true } },
         assignees: userSummary,
         watchers: userSummary,
         createdBy: { select: { id: true, fullName: true } },
