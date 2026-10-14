@@ -13,9 +13,11 @@ const envSchema = z.object({
   BCRYPT_ROUNDS: z.coerce.number().int().min(8).max(15).default(10),
   // An empty value (e.g. cleared on the hosting dashboard) means "no Redis", not a crash at startup
   REDIS_URL: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().url().optional()),
-  // Email through Resend's HTTPS API; without a key, emails are written to mail-outbox.jsonl instead
+  // Email through Brevo's HTTPS API (used when set), else Resend's; without either, emails go to mail-outbox.jsonl
+  BREVO_API_KEY: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().optional()),
   RESEND_API_KEY: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().optional()),
-  MAIL_FROM: z.string().default("PMT <onboarding@resend.dev>"),
+  // "Name <address>"; the address must be a verified sender in Brevo (or a verified domain in Resend)
+  MAIL_FROM: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().default("PMT <xzen347@gmail.com>")),
   // The site people open (for links in emails); falls back to CLIENT_URL
   APP_URL: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().url().optional()),
   // Proxy hops in front of the app (Render's load balancer = 1). Without it every user shares the proxy's IP,
