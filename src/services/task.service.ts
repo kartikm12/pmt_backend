@@ -1,4 +1,5 @@
 import { prisma } from "../prisma/client.js";
+import { KEEP_DAYS, pastKeep } from "./trash-cleanup.service.js";
 import { TASK_STATUS, type UserRole } from "../constants/enums.js";
 import { ApiError } from "../utils/apiError.js";
 import { ActivityService } from "./activity.service.js";
@@ -478,7 +479,8 @@ export class TaskService {
   // Recently deleted: bring a task back (its project must still exist)
   static async restore(taskId: string, actorUserId: string) {
     const task = await prisma.task.findFirst({ where: { id: taskId, deletedAt: { not: null } }, include: { project: { select: { deletedAt: true } } } });
-    if (!task) throw new ApiError(404, "Deleted task not found");
+    if (!task || !task.deletedAt) throw new ApiError(404, "Deleted task not found");
+    if (pastKeep(task.deletedAt)) throw new ApiError(410, `This task was deleted more than ${KEEP_DAYS} days ago and can't be restored.`);
     if (task.project.deletedAt) throw new ApiError(400, "Restore its project first");
     await prisma.task.update({ where: { id: taskId }, data: { deletedAt: null } });
     await ActivityService.log({

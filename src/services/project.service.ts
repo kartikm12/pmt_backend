@@ -12,6 +12,7 @@ import { ApiError } from "../utils/apiError.js";
 import { createSlug } from "../utils/slug.js";
 import { ActivityService } from "./activity.service.js";
 import { NotificationService } from "./notification.service.js";
+import { KEEP_DAYS, pastKeep } from "./trash-cleanup.service.js";
 import { socketService } from "./socket.service.js";
 import { generateShortId } from "../utils/id.js";
 
@@ -756,7 +757,7 @@ export class ProjectService {
 
   // Recently deleted: projects and tasks soft-deleted in the last 30 days (company-wide managers only)
   static async listTrash() {
-    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    const since = new Date(Date.now() - KEEP_DAYS * 24 * 3600 * 1000);
     const [projects, tasks] = await Promise.all([
       prisma.project.findMany({
         where: { deletedAt: { gte: since } },
@@ -770,12 +771,33 @@ export class ProjectService {
         select: { id: true, title: true, deletedAt: true, project: { select: { id: true, name: true } } }
       })
     ]);
-    return { projects, tasks };
+    // Who deleted each item, from the activity log written at delete time (latest entry wins)
+    const logs = await prisma.activityLog.findMany({
+      where: {
+        OR: [
+          { action: "PROJECT_ARCHIVED", entityId: { in: projects.map((p) => p.id) } },
+          { action: "TASK_DELETED", entityId: { in: tasks.map((t) => t.id) } }
+        ]
+      },
+      orderBy: { createdAt: "asc" },
+      select: { entityId: true, user: { select: { fullName: true } } }
+    });
+    const by = new Map(logs.map((l) => [l.entityId, l.user?.fullName ?? null]));
+    // What a restore would bring back: tasks stamped with the project's own delete time (same 1 s window as restore())
+    const restorable = await Promise.all(projects.map((p) => prisma.task.count({
+      where: { projectId: p.id, deletedAt: { gte: new Date(p.deletedAt!.getTime() - 1000), lte: new Date(p.deletedAt!.getTime() + 1000) } }
+    })));
+    return {
+      keepDays: KEEP_DAYS,
+      projects: projects.map((p, i) => ({ ...p, restorableTasks: restorable[i], deletedBy: by.get(p.id) ?? null })),
+      tasks: tasks.map((t) => ({ ...t, deletedBy: by.get(t.id) ?? null }))
+    };
   }
 
   static async restore(projectId: string, actorUserId: string) {
     const project = await prisma.project.findFirst({ where: { id: projectId, deletedAt: { not: null } } });
     if (!project || !project.deletedAt) throw new ApiError(404, "Deleted project not found");
+    if (pastKeep(project.deletedAt)) throw new ApiError(410, `This project was deleted more than ${KEEP_DAYS} days ago and can't be restored.`);
 
     // archive() stamps the project, its tasks and its memberships with one timestamp; bring those back,
     // but not tasks or members removed on their own earlier. The 1 s margin covers projects deleted by
