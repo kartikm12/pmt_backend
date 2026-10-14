@@ -8,9 +8,10 @@ export class NotificationService {
     return prisma.notification.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
+      take: 200,
       include: {
-        project: { select: { id: true, name: true } },
-        task: { select: { id: true, title: true } }
+        project: { select: { id: true, name: true, deletedAt: true } },
+        task: { select: { id: true, title: true, deletedAt: true } }
       }
     });
   }

@@ -8,7 +8,9 @@
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
-    "make-admin": "tsx src/scripts/make-admin.ts"
+    "make-admin": "tsx src/scripts/make-admin.ts",
+    "setup-storage": "tsx src/scripts/setup-storage.ts",
+    "migrate-files": "tsx src/scripts/migrate-files.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

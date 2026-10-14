@@ -1,4 +1,5 @@
 import { prisma } from "../prisma/client.js";
+import { withFileLink } from "../utils/fileLink.js";
 import { socketService } from "./socket.service.js";
 
 import { NotificationService } from "./notification.service.js";
@@ -41,11 +42,15 @@ export class AttachmentService {
 
   static async list(filters: { projectId?: string; taskId?: string; userId: string; role: UserRole }) {
     await this.assertAttachmentAccess(filters);
+    // Same rule as the project page: non-members only see files of tasks assigned to them
+    const projectScope = filters.projectId && !(await ProjectService.isMember(filters.projectId, filters.userId, filters.role))
+      ? { task: { deletedAt: null, assignees: { some: { id: filters.userId } } } }
+      : { OR: [{ taskId: null }, { task: { deletedAt: null } }] };
 
-    return prisma.attachment.findMany({
+    const files = await prisma.attachment.findMany({
       where: filters.taskId 
         ? { taskId: filters.taskId } 
-        : { projectId: filters.projectId || undefined },
+        : { projectId: filters.projectId || undefined, ...projectScope },
       include: {
         user: {
           select: { id: true, fullName: true, avatarUrl: true }
@@ -53,6 +58,7 @@ export class AttachmentService {
       },
       orderBy: { createdAt: "desc" }
     });
+    return files.map(withFileLink);
   }
 
   static async create(data: {
@@ -84,7 +90,7 @@ export class AttachmentService {
     });
 
     if (attachment.projectId) {
-      socketService.emitToProject(attachment.projectId, "attachment_added", attachment);
+      socketService.emitToProject(attachment.projectId, "attachment_added", withFileLink(attachment));
     }
 
     const { project, task, user } = attachment;

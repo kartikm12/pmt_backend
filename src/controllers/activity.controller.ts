@@ -18,6 +18,10 @@ export class ActivityController {
         await TaskService.getById(taskId, userId, role as UserRole);
       } else if (projectId) {
         await ProjectService.assertProjectAccess(projectId, userId, role as UserRole);
+        // Not a member (only assigned a task): just their own actions and their own tasks' activity
+        if (!(await ProjectService.isMember(projectId, userId, role as UserRole))) {
+          scope = { OR: [{ userId }, { task: { assignees: { some: { id: userId } } } }] };
+        }
       } else {
         scope = {
           OR: [

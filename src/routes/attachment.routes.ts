@@ -6,7 +6,10 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 
 export const attachmentRouter = Router();
 
-// All routes require authentication
+// Before sign-in: opened from a plain link, checked by the link's own signature (utils/fileLink.ts)
+attachmentRouter.get("/:id/file", asyncHandler(AttachmentController.file));
+
+// All other routes require authentication
 attachmentRouter.use(authenticate);
 
 attachmentRouter.post("/upload", upload.single("file"), asyncHandler(validateFileBytes), asyncHandler(AttachmentController.upload));

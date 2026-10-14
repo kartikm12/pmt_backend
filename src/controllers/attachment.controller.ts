@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { checkFileLink, withFileLink } from "../utils/fileLink.js";
 import { AttachmentService } from "../services/attachment.service.js";
 import { ApiError } from "../utils/apiError.js";
 import fs from "fs";
@@ -22,7 +23,7 @@ export class AttachmentController {
     // Check access (and that viewers can't upload) before anything reaches storage
     const finalProjectId = await AttachmentService.assertCanUpload({ projectId, taskId, userId: user.userId, role: user.role as any });
 
-    const fileUrl = await StorageService.uploadFile(file.buffer, file.originalname, file.mimetype, 'attachments');
+    const fileUrl = await StorageService.uploadPrivateFile(file.buffer, file.originalname, file.mimetype);
 
     try {
       const attachment = await AttachmentService.create({
@@ -36,11 +37,24 @@ export class AttachmentController {
         role: user.role as any
       });
 
-      res.status(201).json(attachment);
+      res.status(201).json(withFileLink(attachment));
     } catch (error) {
       await StorageService.deleteFile(fileUrl); // don't leave an orphan file in the bucket
       throw error;
     }
+  }
+
+  // Opened straight from a link (no sign-in header), so the link's own signature is the check
+  static async file(req: Request, res: Response) {
+    res.setHeader("Cache-Control", "no-store");
+    const check = checkFileLink(req.params.id, req.query.exp, req.query.sig);
+    if (check !== "ok") {
+      return res.status(check === "expired" ? 410 : 403).type("text/plain")
+        .send(check === "expired" ? "This file link has expired. Open the file again from PMT." : "This file link isn't valid. Open the file from PMT.");
+    }
+    const attachment = await AttachmentService.getById(req.params.id);
+    if (!attachment) return res.status(404).type("text/plain").send("This file was deleted.");
+    return res.redirect(302, await StorageService.openUrl(attachment.url));
   }
 
   static async list(req: Request, res: Response) {

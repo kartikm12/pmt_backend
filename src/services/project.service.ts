@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { withFileLink } from "../utils/fileLink.js";
 import {
   MEMBERSHIP_ROLE,
   PROJECT_STATUS,
@@ -72,6 +73,12 @@ export class ProjectService {
     if (membership === MEMBERSHIP_ROLE.VIEWER) return "viewer";
     if (membership || project.tasks.length) return "contributor";
     return null;
+  }
+
+  // A real member (or a company manager) sees the whole project; someone only assigned a task sees just that work
+  static async isMember(projectId: string, userId: string, globalRole: UserRole) {
+    if (this.isManagerRole(globalRole)) return true;
+    return !!(await prisma.projectMember.findFirst({ where: { projectId, userId, removedAt: null }, select: { id: true } }));
   }
 
   static async requireProjectRole(projectId: string, userId: string, globalRole: UserRole, needed: ProjectRole) {
@@ -239,10 +246,7 @@ export class ProjectService {
       throw new ApiError(404, "Project not found");
     }
     // Members see the whole board; someone who is only assigned a task sees just their own work
-    const isMember = this.isManagerRole(role) || !!(await prisma.projectMember.findFirst({
-      where: { projectId, userId, removedAt: null },
-      select: { id: true }
-    }));
+    const isMember = await this.isMember(projectId, userId, role);
 
     const project = await prisma.project.findFirstOrThrow({
       where: { id: projectId, deletedAt: null },
@@ -280,7 +284,12 @@ export class ProjectService {
             blockedBy: { where: { deletedAt: null }, select: { id: true, title: true, status: true } }
           }
         },
-        attachments: true,
+        // Project files: members see all (minus files of deleted tasks); others only their own tasks' files
+        attachments: {
+          where: isMember
+            ? { OR: [{ taskId: null }, { task: { deletedAt: null } }] }
+            : { task: { deletedAt: null, assignees: { some: { id: userId } } } }
+        },
         milestones: {
           orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
           include: { tasks: { where: { deletedAt: null }, select: { status: true } } }
@@ -292,7 +301,7 @@ export class ProjectService {
 
     const tasksWithStatus = tasks.map(({ subtasks, ...task }: any) => ({
       ...task,
-      attachments: task.attachments || [],
+      attachments: (task.attachments || []).map(withFileLink),
       subtaskTotal: subtasks.length,
       subtaskDone: subtasks.filter((s: any) => s.done).length
     }));
@@ -310,7 +319,7 @@ export class ProjectService {
         manager, 
         members: members.map((m: any) => ({ userId: m.userId, role: m.role, user: m.user })),
         teamMemberIds: members.map((m: any) => m.userId),
-        attachments: attachments || [],
+        attachments: (attachments || []).map(withFileLink),
         myRole,
         milestones: milestones.map(({ tasks: mTasks, ...m }) => ({
           ...m,
@@ -491,6 +500,7 @@ export class ProjectService {
           where: { projectId, userId: { in: removedMemberIds }, removedAt: null },
           data: { removedAt: new Date() }
         });
+        socketService.leaveProject(projectId, removedMemberIds);
       }
     }
 
@@ -546,6 +556,7 @@ export class ProjectService {
     for (const memberId of project.teamMemberIds) {
       socketService.emitToUser(memberId, "project_deleted", { projectId: project.id });
     }
+    socketService.closeProject(project.id);
 
     return { success: true };
   }
@@ -626,6 +637,7 @@ export class ProjectService {
       where: { projectId_userId: { projectId, userId: memberId } },
       data: { removedAt: new Date() }
     });
+    socketService.leaveProject(projectId, [memberId]);
 
     await ActivityService.log({
       action: "PROJECT_MEMBER_REMOVED",

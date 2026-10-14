@@ -63,7 +63,18 @@ export class CommentService {
       }).catch(err => console.error("Activity log failed:", err));
 
       // Mentions logic
-      const allUsers = await prisma.user.findMany({ select: { id: true, fullName: true }, where: { deletedAt: null, pendingApproval: false } });
+      // Only people who can open this task: company managers, project members and its assignees; never suspended
+      const allUsers = await prisma.user.findMany({
+        select: { id: true, fullName: true },
+        where: {
+          deletedAt: null, pendingApproval: false, status: { not: "SUSPENDED" },
+          OR: [
+            { role: { in: ["MANAGER", "PROJECT_MANAGER", "ADMIN"] } },
+            { memberships: { some: { projectId: comment.task.projectId, removedAt: null } } },
+            { assignedTasks: { some: { id: taskId } } }
+          ]
+        }
+      });
       // Sort users by length of fullName descending to avoid partial matches
       allUsers.sort((a, b) => b.fullName.length - a.fullName.length);
       

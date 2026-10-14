@@ -157,6 +157,10 @@ export class TaskService {
     }
   }
 
+  static assertDateOrder(start: Date | null | undefined, due: Date | null | undefined) {
+    if (start && due && start.getTime() > due.getTime()) throw new ApiError(400, "Start date must be on or before the deadline.");
+  }
+
   static async create(actorUserId: string, actorRole: UserRole, input: TaskFields & { title: string; projectId: string }) {
     // A task in a missing or archived project would be invisible everywhere
     const project = await prisma.project.findFirst({ where: { id: input.projectId, deletedAt: null }, select: { id: true } });
@@ -164,6 +168,7 @@ export class TaskService {
     await ProjectService.requireProjectRole(input.projectId, actorUserId, actorRole, "manager");
     await ProjectService.assertActiveUsers(input.assigneeIds ?? []);
     await this.assertLinksInProject(input.projectId, input);
+    this.assertDateOrder(input.startDate ? new Date(input.startDate) : null, input.dueDate ? new Date(input.dueDate) : null);
 
     const task = await prisma.task.create({
       data: {
@@ -259,6 +264,11 @@ export class TaskService {
     // A new due date earns fresh "due soon" / "overdue" reminders
     const newDue = input.dueDate === undefined ? undefined : input.dueDate ? new Date(input.dueDate) : null;
     const dueChanged = newDue !== undefined && (newDue?.getTime() ?? null) !== (existingTask.dueDate?.getTime() ?? null);
+    // Checked only when a date is being changed, so old tasks with odd dates can still be moved along
+    if (input.startDate !== undefined || input.dueDate !== undefined) {
+      const newStart = input.startDate === undefined ? existingTask.startDate : input.startDate ? new Date(input.startDate) : null;
+      this.assertDateOrder(newStart, newDue === undefined ? existingTask.dueDate : newDue);
+    }
 
     const updatedTask = await prisma.task.update({
       where: { id: taskId },
@@ -388,6 +398,10 @@ export class TaskService {
 
   // Recurring task finished: create the next one (once; nextOccurrenceId guards re-completing)
   static async spawnNextOccurrence(taskId: string, actorUserId: string) {
+    // Claim first: two "done" requests at the same moment must not both create the next copy
+    const nextId = generateShortId();
+    const claim = await prisma.task.updateMany({ where: { id: taskId, nextOccurrenceId: null }, data: { nextOccurrenceId: nextId } });
+    if (claim.count === 0) return;
     const t = await prisma.task.findUniqueOrThrow({
       where: { id: taskId },
       include: { assignees: { where: { deletedAt: null, status: { not: "SUSPENDED" } }, select: { id: true } }, subtasks: true }
@@ -409,7 +423,7 @@ export class TaskService {
     };
     const next = await prisma.task.create({
       data: {
-        id: generateShortId(),
+        id: nextId,
         title: t.title,
         description: t.description,
         priority: t.priority,
@@ -427,7 +441,6 @@ export class TaskService {
         subtasks: { create: t.subtasks.map((s) => ({ title: s.title, sortOrder: s.sortOrder })) }
       }
     });
-    await prisma.task.update({ where: { id: taskId }, data: { nextOccurrenceId: next.id } });
     await ActivityService.log({
       action: "TASK_CREATED",
       entityType: "task",

@@ -16,8 +16,10 @@ export class TeamService {
     const users = await prisma.user.findMany({
       where: { deletedAt: null, pendingApproval: false },
       orderBy: { createdAt: "desc" },
-      omit: { passwordHash: true },
-      include: {
+      // Everyone can open Team, so only what it shows: no phone, bio, last sign-in or settings
+      select: {
+        id: true, email: true, fullName: true, avatarUrl: true, title: true,
+        role: true, roleLocked: true, status: true, createdAt: true,
         memberships: {
           where: { removedAt: null, project: { deletedAt: null } },
           include: {

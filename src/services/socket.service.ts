@@ -194,6 +194,8 @@ export class SocketService {
           const user = await prisma.user.findFirst({ where: { id: userId, deletedAt: null }, select: { role: true } });
           if (!user) return;
           await ProjectService.assertProjectAccess(projectId, userId, user.role);
+          // Members only: someone just assigned a task gets their own updates, not the whole project's
+          if (!(await ProjectService.isMember(projectId, userId, user.role))) return;
           socket.join(`project_${projectId}`);
         } catch {
           // No access (or project gone): silently stay out of the room
@@ -259,6 +261,15 @@ export class SocketService {
 
   public emitToProject(projectId: string, event: string, data: any) {
     this.io?.to(`project_${projectId}`).emit(event, data);
+  }
+
+  // People taken off a project stop getting its live events at once (on every server, via the adapter)
+  public leaveProject(projectId: string, userIds: string[]) {
+    if (userIds.length) this.io?.in(userIds.map((id) => `user_${id}`)).socketsLeave(`project_${projectId}`);
+  }
+
+  public closeProject(projectId: string) {
+    this.io?.in(`project_${projectId}`).socketsLeave(`project_${projectId}`);
   }
 
   public emitToAll(event: string, data: any) {
