@@ -22,8 +22,9 @@ async function main() {
     if (up) { console.error(`  skip ${r.id}: couldn't upload to ${FILES_BUCKET}: ${up.message}`); continue; }
     // Point the row at the private copy first; only then remove the public one (a failure leaves a spare copy, never a dead link)
     await prisma.attachment.update({ where: { id: r.id }, data: { url: `private:${filePath}` } });
-    const { error: rm } = await supabase.storage.from("uploads").remove([filePath]);
-    if (rm) console.error(`  moved ${r.id}, but the public copy is still there: ${rm.message}`);
+    // Supabase reports a blocked delete as success with nothing removed, so count what actually went
+    const { data: removed, error: rm } = await supabase.storage.from("uploads").remove([filePath]);
+    if (rm || !removed?.length) console.error(`  moved ${r.id}, but the public copy is still there: ${rm?.message ?? "nothing was removed"} (${filePath})`);
     moved++;
   }
   if (apply) console.log(`Moved ${moved} of ${rows.length}.`);
