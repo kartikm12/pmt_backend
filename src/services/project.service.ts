@@ -385,7 +385,8 @@ export class ProjectService {
           type: "PROJECT_UPDATED",
           title: "New Project Assignment",
           message: `You have been added to a new project: ${project.name}`,
-          projectId: project.id
+          projectId: project.id,
+          email: true
         });
       }
     }
@@ -477,7 +478,8 @@ export class ProjectService {
               type: "PROJECT_UPDATED",
               title: "Project Assignment",
               message: `You have been added to project: ${project.name}`,
-              projectId: project.id
+              projectId: project.id,
+              email: true
             });
           }
         }
@@ -584,7 +586,8 @@ export class ProjectService {
             type: "PROJECT_UPDATED",
             title: "Project Assignment",
             message: `You have been added to project: ${project?.name || 'Unknown'}`,
-            projectId: projectId
+            projectId: projectId,
+            email: true
           }).catch(err => console.error("Notification failed for project assign:", err));
         }
       }
