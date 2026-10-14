@@ -106,7 +106,7 @@ export class UserService {
 
     await prisma.user.update({
       where: { id: userId },
-      data: { passwordHash }
+      data: { passwordHash, passwordChangedAt: new Date() }
     });
 
     await ActivityService.log({

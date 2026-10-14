@@ -172,6 +172,8 @@ export class AuthService {
         id: userId,
         deletedAt: null
       },
+      // Your own account is the one place this date is shown
+      omit: { passwordChangedAt: false },
       include: {
         memberships: {
           where: { removedAt: null, project: { deletedAt: null } },

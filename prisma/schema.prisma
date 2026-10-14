@@ -91,6 +91,8 @@ model User {
   id              String          @id @default(cuid())
   email           String          @unique
   passwordHash    String
+  // Set on every password change or reset; private to the person (hidden by default in src/prisma/client.ts)
+  passwordChangedAt DateTime?
   fullName        String
   avatarUrl       String?
   bio             String?

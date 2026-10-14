@@ -48,7 +48,7 @@ export class PasswordResetService {
     // New password, link spent, and every signed-in device signed out (whoever had the old password)
     const active = await prisma.userSession.findMany({ where: { userId: user.id, isActive: true }, select: { id: true } });
     await prisma.$transaction([
-      prisma.user.update({ where: { id: user.id }, data: { passwordHash } }),
+      prisma.user.update({ where: { id: user.id }, data: { passwordHash, passwordChangedAt: new Date() } }),
       prisma.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: now } }),
       prisma.userSession.updateMany({ where: { userId: user.id, isActive: true }, data: { isActive: false, revokedAt: now, revokedReason: "PASSWORD_RESET" } })
     ]);
