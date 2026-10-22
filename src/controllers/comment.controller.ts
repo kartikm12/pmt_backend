@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { CommentService } from "../services/comment.service.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
+import { ApiError } from "../utils/apiError.js";
 
 export class CommentController {
   static async list(req: Request, res: Response) {
@@ -9,8 +10,10 @@ export class CommentController {
   }
 
   static async create(req: Request, res: Response) {
-    const { body } = req.body;
-    const comment = await CommentService.create(req.params.taskId, req.user!.userId, req.user!.role as any, body);
+    const body: string = req.body.body ?? "";
+    const files = (Array.isArray(req.files) ? req.files : []) as Express.Multer.File[];
+    if (!body.trim() && !files.length) throw new ApiError(400, "Write a comment or attach a file");
+    const comment = await CommentService.create(req.params.taskId, req.user!.userId, req.user!.role as any, body, files);
     return res.status(201).json(comment);
   }
 

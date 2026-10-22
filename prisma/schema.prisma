@@ -300,6 +300,7 @@ model TaskComment {
   deletedAt DateTime?
   task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attachments Attachment[]
 
   @@index([taskId, deletedAt])
   @@index([userId, deletedAt])
@@ -354,15 +355,19 @@ model Attachment {
   fileSize  Int
   projectId String?
   taskId    String?
+  // Set when the file was attached to a comment (it still belongs to the task, so the Files tab shows it)
+  commentId String?
   userId    String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
   task      Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  comment   TaskComment? @relation(fields: [commentId], references: [id], onDelete: SetNull)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([projectId, createdAt])
   @@index([taskId, createdAt])
   @@index([userId, createdAt])
+  @@index([commentId])
 }

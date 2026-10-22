@@ -59,3 +59,8 @@ export const updateTaskSchema = z.object({
 export const createCommentSchema = z.object({
   body: z.string().trim().min(1, "Comment cannot be empty").max(5000)
 });
+
+// Posting: the text may be empty when files are attached (the controller needs one or the other)
+export const newCommentSchema = z.object({
+  body: z.string().trim().max(5000).default("")
+});

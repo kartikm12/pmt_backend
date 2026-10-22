@@ -6,8 +6,9 @@ import { authenticate } from "../middleware/authenticate.js";
 import { authorize } from "../middleware/authorize.js";
 import { validate } from "../middleware/validate.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
+import { upload, validateFileBytes } from "../utils/multer.js";
 import {
-  createCommentSchema,
+  newCommentSchema,
   createTaskSchema,
   reorderSchema,
   subtaskSchema,
@@ -25,7 +26,7 @@ taskRouter.post("/reorder", validate(reorderSchema), asyncHandler(TaskController
 taskRouter.patch("/subtasks/:subtaskId", validate(subtaskSchema.partial()), asyncHandler(TaskController.updateSubtask));
 taskRouter.delete("/subtasks/:subtaskId", asyncHandler(TaskController.removeSubtask));
 taskRouter.delete("/time/:entryId", asyncHandler(TaskController.removeTime));
-taskRouter.patch("/comments/:commentId", validate(createCommentSchema), asyncHandler(CommentController.update));
+taskRouter.patch("/comments/:commentId", validate(newCommentSchema), asyncHandler(CommentController.update));
 taskRouter.delete("/comments/:commentId", asyncHandler(CommentController.remove));
 
 taskRouter.get("/:taskId", asyncHandler(TaskController.getById));
@@ -45,4 +46,5 @@ taskRouter.post("/:taskId/time", validate(timeEntrySchema), asyncHandler(TaskCon
 
 // Task Comments
 taskRouter.get("/:taskId/comments", asyncHandler(CommentController.list));
-taskRouter.post("/:taskId/comments", validate(createCommentSchema), asyncHandler(CommentController.create));
+// Up to 5 files with a comment (multipart); plain JSON comments still work
+taskRouter.post("/:taskId/comments", upload.array("files", 5), asyncHandler(validateFileBytes), validate(newCommentSchema), asyncHandler(CommentController.create));

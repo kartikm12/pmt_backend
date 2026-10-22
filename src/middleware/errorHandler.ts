@@ -14,7 +14,7 @@ export function notFound(_req: Request, _res: Response, next: NextFunction) {
 
 export function errorHandler(
   error: unknown,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction
 ) {
@@ -53,7 +53,10 @@ export function errorHandler(
   }
 
   if (error instanceof multer.MulterError) {
-    const message = error.code === "LIMIT_FILE_SIZE" ? "File is too large (max 10 MB)" : error.message;
+    const message = error.code === "LIMIT_FILE_SIZE" ? "File is too large (max 10 MB)"
+      // A 6th file in a comment's "files" field; any other unexpected field keeps multer's own wording
+      : error.code === "LIMIT_UNEXPECTED_FILE" && error.field === "files" && req.originalUrl.split("?")[0].endsWith("/comments")
+        ? "Attach up to 5 files to one comment" : error.message;
     return res.status(400).json({ message });
   }
 

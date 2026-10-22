@@ -40,6 +40,8 @@ const allowedExtensions = new Set([
 
 export const upload = multer({
   storage,
+  // Browsers send file names as UTF-8; multer's default (latin1) turned "रिपोर्ट.pdf" or an emoji into mojibake
+  defParamCharset: "utf8",
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const extension = path.extname(file.originalname).toLowerCase();
@@ -66,9 +68,19 @@ export const upload = multer({
  * whose real content type does not match what was declared.
  */
 export async function validateFileBytes(req: Request, _res: Response, next: NextFunction) {
-  const file = req.file;
-  if (!file) return next();
+  // One file (attachments) or several (a comment's files): each is checked; with several, the message names it
+  const single = req.file;
+  const files = single ? [single] : Array.isArray(req.files) ? req.files : [];
+  for (const file of files) {
+    const reason = await fileProblem(file);
+    if (reason) return next(new ApiError(400, single ? reason : `"${file.originalname}": ${reason}`));
+  }
+  next();
+}
 
+// Why a file is refused (null when it's fine)
+async function fileProblem(file: Express.Multer.File): Promise<string | null> {
+  if (!file.size) return "The file is empty";
   try {
     // Dynamic import — file-type is a pure-ESM package
     const { fileTypeFromBuffer } = await import("file-type");
@@ -78,28 +90,20 @@ export async function validateFileBytes(req: Request, _res: Response, next: Next
     // anything that *does* carry a binary signature is not really text
     const extension = path.extname(file.originalname).toLowerCase();
     if (extension === ".txt" || extension === ".csv") {
-      return detected ? next(new ApiError(400, "File content does not match its declared type")) : next();
+      return detected ? "File content does not match its declared type" : null;
     }
 
     // Legacy Office files (.doc/.xls/.ppt) all share one container signature
     const legacyOffice = new Set(["application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint"]);
-    if (detected?.mime === "application/x-cfb" && legacyOffice.has(file.mimetype)) {
-      return next();
-    }
+    if (detected?.mime === "application/x-cfb" && legacyOffice.has(file.mimetype)) return null;
 
-    // For all other types the detected type must be present and on the allowlist
-    if (!detected || !allowedMimeTypes.has(detected.mime)) {
-      return next(new ApiError(400, "File content does not match its declared type"));
+    // For all other types the detected type must be present, on the allowlist, and agree with what was declared
+    if (!detected || !allowedMimeTypes.has(detected.mime) || detected.mime !== file.mimetype) {
+      return "File content does not match its declared type";
     }
-
-    // The detected MIME must agree with the client-declared MIME
-    if (detected.mime !== file.mimetype) {
-      return next(new ApiError(400, "File content does not match its declared type"));
-    }
-
-    next();
+    return null;
   } catch {
     // Fail safe: if file-type itself throws, reject the upload
-    next(new ApiError(400, "Unable to verify file content"));
+    return "Unable to verify file content";
   }
 }

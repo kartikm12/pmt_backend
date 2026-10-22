@@ -7,30 +7,46 @@ import type { UserRole } from "../constants/enums.js";
 import { TaskService } from "./task.service.js";
 import { ProjectService } from "./project.service.js";
 import { ApiError } from "../utils/apiError.js";
+import { StorageService } from "./storage.service.js";
+import { withFileLink } from "../utils/fileLink.js";
 
 export class CommentService {
   static async list(taskId: string, userId: string, role: UserRole) {
     await TaskService.getById(taskId, userId, role);
 
-    return prisma.taskComment.findMany({
+    const comments = await prisma.taskComment.findMany({
       where: { taskId, deletedAt: null },
       include: {
         user: {
           select: { id: true, fullName: true, avatarUrl: true }
-        }
+        },
+        attachments: { orderBy: { createdAt: "asc" } }
       },
       orderBy: { createdAt: "desc" }
     });
+    return comments.map((c) => ({ ...c, attachments: c.attachments.map(withFileLink) }));
   }
 
-  static async create(taskId: string, userId: string, role: UserRole, body: string) {
+  static async create(taskId: string, userId: string, role: UserRole, body: string, files: Express.Multer.File[] = []) {
     const task = await TaskService.getById(taskId, userId, role);
     await ProjectService.requireProjectRole(task.projectId, userId, role, "contributor"); // viewers read only
 
-    // 1. Create the comment
-    const commentRecord = await prisma.taskComment.create({
-      data: { taskId, userId, body }
-    });
+    // 1. Files go to private storage first; the comment and its file rows are then saved together. If either
+    //    step fails, the stored files are removed again (no orphan files, no comment pointing at missing ones)
+    const stored: string[] = [];
+    let commentRecord;
+    try {
+      for (const f of files) stored.push(await StorageService.uploadPrivateFile(f.buffer, f.originalname, f.mimetype));
+      commentRecord = await prisma.taskComment.create({
+        data: {
+          taskId, userId, body,
+          attachments: { create: files.map((f, i) => ({ name: f.originalname, url: stored[i], fileType: f.mimetype, fileSize: f.size, projectId: task.projectId, taskId, userId })) }
+        }
+      });
+    } catch (err) {
+      for (const ref of stored) await StorageService.deleteFile(ref);
+      throw err;
+    }
 
     // 2. Fetch required data for notifications/activity in a separate, simple query
     // We do this separately to avoid complex nested includes that can fail
@@ -38,6 +54,7 @@ export class CommentService {
       where: { id: commentRecord.id },
       include: {
         user: { select: { id: true, fullName: true, avatarUrl: true } },
+        attachments: { orderBy: { createdAt: "asc" } },
         task: {
           include: {
             assignees: { select: { id: true } },
@@ -56,7 +73,10 @@ export class CommentService {
         action: "COMMENT_ADDED",
         entityType: "task",
         entityId: taskId,
-        description: `Comment: "${body.length > 50 ? body.substring(0, 47) + "..." : body}"`,
+        description: [
+          body ? `Comment: "${body.length > 50 ? body.substring(0, 47) + "..." : body}"` : "Comment",
+          files.length ? `with ${files.length} file${files.length > 1 ? "s" : ""}` : ""
+        ].filter(Boolean).join(" "),
         userId,
         projectId: comment.task.projectId,
         taskId
@@ -118,21 +138,23 @@ export class CommentService {
         });
       }
 
-      // Project-wide real-time event
+      // Project-wide real-time event (and each file, so an open Files tab shows it)
       socketService.emitToProject(comment.task.projectId, "comment_added", {
         taskId,
         comment: {
           id: comment.id,
           body: comment.body,
           createdAt: comment.createdAt,
-          user: comment.user
+          user: comment.user,
+          attachments: comment.attachments.map(withFileLink)
         }
       });
+      for (const a of comment.attachments) socketService.emitToProject(comment.task.projectId, "attachment_added", withFileLink(a));
     } catch (sideEffectError) {
       console.error("Comment side effects failed:", sideEffectError);
     }
 
-    return comment;
+    return { ...comment, attachments: comment.attachments.map(withFileLink) };
   }
 
   static async remove(commentId: string, userId: string, role: UserRole) {
@@ -159,21 +181,30 @@ export class CommentService {
       throw new ApiError(403, "You do not have permission to delete this comment");
     }
 
-    return prisma.taskComment.update({
-      where: { id: commentId },
-      data: { deletedAt: new Date() }
-    });
+    // Its files go with it: rows first, then storage (a storage hiccup leaves a spare file, never a broken row)
+    const files = await prisma.attachment.findMany({ where: { commentId }, select: { id: true, url: true } });
+    const [removed] = await prisma.$transaction([
+      prisma.taskComment.update({ where: { id: commentId }, data: { deletedAt: new Date() } }),
+      prisma.attachment.deleteMany({ where: { commentId } })
+    ]);
+    for (const f of files) {
+      await StorageService.deleteFile(f.url);
+      socketService.emitToProject(task.projectId, "attachment_deleted", { id: f.id, taskId: task.id });
+    }
+    return removed;
   }
 
   // Only the author may reword a comment; managers can delete any comment but not put words in someone's mouth
   static async update(commentId: string, userId: string, role: UserRole, body: string) {
     const comment = await prisma.taskComment.findFirst({
       where: { id: commentId, deletedAt: null },
-      select: { userId: true, taskId: true }
+      select: { userId: true, taskId: true, _count: { select: { attachments: true } } }
     });
     if (!comment) {
       throw new ApiError(404, "Comment not found");
     }
+    // The text may go only if the comment still has files to show
+    if (!body.trim() && !comment._count.attachments) throw new ApiError(400, "Comment cannot be empty");
 
     const task = await TaskService.getById(comment.taskId, userId, role);
     if (comment.userId !== userId) {

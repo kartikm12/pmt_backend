@@ -9,6 +9,7 @@ import { socketService } from "./socket.service.js";
 import { generateShortId } from "../utils/id.js";
 import { ProjectService, type ProjectRole } from "./project.service.js";
 import { LIVE_PROJECT_STATUSES, type ProjectStatus } from "../constants/enums.js";
+import { withFileLink } from "../utils/fileLink.js";
 
 type Status = "TODO" | "IN_PROGRESS" | "REVIEW" | "DONE";
 type Priority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
@@ -122,7 +123,8 @@ export class TaskService {
           include: {
             user: {
               select: { id: true, fullName: true, avatarUrl: true }
-            }
+            },
+            attachments: { orderBy: { createdAt: "asc" } }
           },
           orderBy: { createdAt: "desc" }
         }
@@ -134,7 +136,8 @@ export class TaskService {
     }
 
     const myRole = userId && role ? await ProjectService.projectRole(task.projectId, userId, role) : null;
-    return { ...task, myRole };
+    const comments = task.comments.map((c) => ({ ...c, attachments: c.attachments.map(withFileLink) }));
+    return { ...task, comments, myRole };
   }
 
   // Blockers must belong to the task's own project; a task can't block itself
