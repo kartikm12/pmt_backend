@@ -19,6 +19,7 @@ export const taskRouter = Router();
 
 taskRouter.use(authenticate);
 taskRouter.get("/", asyncHandler(TaskController.list));
+taskRouter.get("/repeat-preview", asyncHandler(TaskController.repeatPreview));
 // Fixed paths first so "/:taskId" doesn't swallow them
 taskRouter.post("/reorder", validate(reorderSchema), asyncHandler(TaskController.reorder));
 taskRouter.patch("/subtasks/:subtaskId", validate(subtaskSchema.partial()), asyncHandler(TaskController.updateSubtask));

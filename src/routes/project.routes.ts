@@ -9,7 +9,6 @@ import {
   assignMembersSchema,
   createProjectSchema,
   memberRoleSchema,
-  milestoneSchema,
   updateProjectSchema
 } from "../validators/project.validator.js";
 
@@ -21,7 +20,6 @@ projectRouter.use(authenticate);
 projectRouter.get("/", asyncHandler(ProjectController.list));
 // Before "/:projectId", which would otherwise swallow "trash"
 projectRouter.get("/trash", companyManagers, asyncHandler(ProjectController.trash));
-projectRouter.get("/milestones", asyncHandler(ProjectController.milestones));
 projectRouter.get("/:projectId", asyncHandler(ProjectController.getById));
 projectRouter.get("/:projectId/bundle", asyncHandler(ProjectController.getBundle));
 projectRouter.post("/", companyManagers, validate(createProjectSchema), asyncHandler(ProjectController.create));
@@ -32,6 +30,3 @@ projectRouter.delete("/:projectId", asyncHandler(ProjectController.remove));
 projectRouter.post("/:projectId/members", validate(assignMembersSchema), asyncHandler(ProjectController.assignMembers));
 projectRouter.patch("/:projectId/members/:userId", validate(memberRoleSchema), asyncHandler(ProjectController.setMemberRole));
 projectRouter.delete("/:projectId/members/:userId", asyncHandler(ProjectController.removeMember));
-projectRouter.post("/:projectId/milestones", validate(milestoneSchema), asyncHandler(ProjectController.createMilestone));
-projectRouter.patch("/:projectId/milestones/:milestoneId", validate(milestoneSchema.partial()), asyncHandler(ProjectController.updateMilestone));
-projectRouter.delete("/:projectId/milestones/:milestoneId", asyncHandler(ProjectController.deleteMilestone));

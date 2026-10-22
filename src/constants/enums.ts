@@ -31,6 +31,13 @@ export const PROJECT_STATUS = {
 
 export type ProjectStatus = (typeof PROJECT_STATUS)[keyof typeof PROJECT_STATUS];
 
+// Projects where work is going on: only these send reminders, count overdue work and make repeat copies.
+// COMPLETED and CANCELLED projects are also read-only (ProjectService.requireProjectRole) until reopened.
+export const LIVE_PROJECT_STATUSES: ProjectStatus[] = [PROJECT_STATUS.PLANNING, PROJECT_STATUS.ACTIVE];
+export const CLOSED_PROJECT_STATUSES: ProjectStatus[] = [PROJECT_STATUS.COMPLETED, PROJECT_STATUS.CANCELLED];
+// Prisma filter piece for "the task's project isn't paused or finished"
+export const NOT_IN_PAUSED_PROJECT = { NOT: { project: { status: { in: [PROJECT_STATUS.ON_HOLD, PROJECT_STATUS.COMPLETED, PROJECT_STATUS.CANCELLED] } } } };
+
 export const TASK_STATUS = {
   TODO: "TODO",
   IN_PROGRESS: "IN_PROGRESS",

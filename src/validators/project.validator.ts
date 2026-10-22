@@ -22,16 +22,12 @@ export const updateProjectSchema = z.object({
   startDate: z.string().datetime().nullable().optional(),
   dueDate: z.string().datetime().nullable().optional(),
   managerId: z.string().optional(),
-  memberIds: z.array(z.string()).optional()
+  memberIds: z.array(z.string()).optional(),
+  closeOpenTasks: z.boolean().optional()
 });
 
 export const memberRoleSchema = z.object({
   role: z.nativeEnum(MEMBERSHIP_ROLE)
-});
-
-export const milestoneSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  dueDate: z.string().datetime().nullable().optional()
 });
 
 export const assignMembersSchema = z.object({

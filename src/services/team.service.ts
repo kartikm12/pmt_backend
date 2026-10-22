@@ -10,6 +10,7 @@ import { socketService } from "./socket.service.js";
 import { AuthService } from "./auth.service.js";
 import { ActivityService } from "./activity.service.js";
 import { MailService } from "../mail/mail.service.js";
+import { ProjectService } from "./project.service.js";
 
 export class TeamService {
   static async list() {
@@ -70,11 +71,10 @@ export class TeamService {
   static async approve(userId: string, role: UserRole, actor: { userId: string; role: UserRole; fullName?: string }) {
     const user = await this.findPending(userId);
     this.assertCanManage(actor.role, undefined, role);
-    const updated = await prisma.user.update({
-      where: { id: user.id },
-      data: { pendingApproval: false, role, status: "ACTIVE" },
-      omit: { passwordHash: true }
-    });
+    // Conditional, so an approve racing a reject (or a second approve) can't both go through
+    const claim = await prisma.user.updateMany({ where: { id: user.id, pendingApproval: true, deletedAt: null }, data: { pendingApproval: false, role, status: "ACTIVE" } });
+    if (claim.count === 0) throw new ApiError(404, "This sign-up was already handled or no longer exists");
+    const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id }, omit: { passwordHash: true } });
     void MailService.send({
       to: user.email,
       subject: "Your PMT account is approved",
@@ -95,7 +95,8 @@ export class TeamService {
   // A rejected sign-up never used the app, so it is removed outright and the email can apply again
   static async reject(userId: string, actor: { userId: string; fullName?: string }) {
     const user = await this.findPending(userId);
-    await prisma.user.delete({ where: { id: user.id } });
+    const gone = await prisma.user.deleteMany({ where: { id: user.id, pendingApproval: true } });
+    if (gone.count === 0) throw new ApiError(404, "This sign-up was already handled or no longer exists");
     await ActivityService.log({
       action: "TEAM_MEMBER_REMOVED",
       entityType: "user",
@@ -211,11 +212,16 @@ export class TeamService {
 
     this.assertCanManage(actorRole, user.role);
 
+    // Projects they manage move to the person removing them, so no project is left without a manager
+    const managed = await prisma.project.findMany({ where: { managerId: userId }, select: { id: true } });
+    for (const p of managed) await ProjectService.takeOverManager(p.id, actorUserId);
+
     await prisma.$transaction([
       prisma.user.update({
         where: { id: userId },
         data: { deletedAt: new Date() }
       }),
+      prisma.passwordResetToken.deleteMany({ where: { userId } }),
       prisma.projectMember.updateMany({
         where: { userId, removedAt: null },
         data: { removedAt: new Date() }
@@ -286,6 +292,8 @@ export class TeamService {
     });
 
     if (input.status === "SUSPENDED" && user.status !== "SUSPENDED") {
+      // A reset link sent before the suspension must not still work
+      await prisma.passwordResetToken.deleteMany({ where: { userId } });
       await this.endSessions(userId, "USER_SUSPENDED", "Your account has been suspended. Contact your manager.");
     }
 

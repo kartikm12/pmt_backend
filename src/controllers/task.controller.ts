@@ -9,6 +9,10 @@ export class TaskController {
     return res.status(200).json(tasks);
   }
 
+  static async repeatPreview(req: Request, res: Response) {
+    return res.status(200).json(TaskService.repeatPreview(String(req.query.rule ?? ""), req.query.due ? String(req.query.due) : undefined));
+  }
+
   static async getById(req: Request, res: Response) {
     const task = await TaskService.getById(req.params.taskId, req.user!.userId, req.user!.role as any);
     return res.status(200).json(task);

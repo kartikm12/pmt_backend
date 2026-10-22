@@ -2,6 +2,7 @@ import { addDays, format, isSameDay, startOfDay } from "date-fns";
 import { TASK_STATUS } from "../constants/enums.js";
 import { prisma } from "../prisma/client.js";
 import { NotificationService } from "./notification.service.js";
+import { LIVE_PROJECT_STATUSES } from "../constants/enums.js";
 
 const DEFAULT_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -10,7 +11,8 @@ const DEFAULT_INTERVAL_MS = 15 * 60 * 1000;
 export class ReminderService {
   static async run(now = new Date()) {
     const today = startOfDay(now);
-    const openTask = { deletedAt: null, status: { not: TASK_STATUS.DONE }, project: { deletedAt: null } } as const;
+    // Paused, finished and cancelled projects don't send reminders
+    const openTask = { deletedAt: null, status: { not: TASK_STATUS.DONE }, project: { deletedAt: null, status: { in: LIVE_PROJECT_STATUSES } } } as const;
     const select = {
       id: true,
       title: true,

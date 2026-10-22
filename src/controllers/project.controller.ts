@@ -2,10 +2,6 @@ import type { Request, Response } from "express";
 import { ProjectService } from "../services/project.service.js";
 
 export class ProjectController {
-  static async milestones(req: Request, res: Response) {
-    return res.status(200).json(await ProjectService.listMilestones(req.user!.userId, req.user!.role as any));
-  }
-
   static async list(req: Request, res: Response) {
     const projects = await ProjectService.list(req.user!.userId, req.user!.role as any);
     return res.status(200).json(projects);
@@ -52,21 +48,6 @@ export class ProjectController {
 
   static async restore(req: Request, res: Response) {
     return res.status(200).json(await ProjectService.restore(req.params.projectId, req.user!.userId));
-  }
-
-  static async createMilestone(req: Request, res: Response) {
-    const milestone = await ProjectService.saveMilestone(req.params.projectId, null, req.body, req.user!.userId, req.user!.role);
-    return res.status(201).json(milestone);
-  }
-
-  static async updateMilestone(req: Request, res: Response) {
-    const milestone = await ProjectService.saveMilestone(req.params.projectId, req.params.milestoneId, req.body, req.user!.userId, req.user!.role);
-    return res.status(200).json(milestone);
-  }
-
-  static async deleteMilestone(req: Request, res: Response) {
-    await ProjectService.deleteMilestone(req.params.projectId, req.params.milestoneId, req.user!.userId, req.user!.role);
-    return res.status(204).send();
   }
 
   static async removeMember(req: Request, res: Response) {

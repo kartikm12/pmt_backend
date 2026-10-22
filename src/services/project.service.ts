@@ -1,8 +1,9 @@
-import { randomUUID } from "crypto";
 import { withFileLink } from "../utils/fileLink.js";
 import {
   MEMBERSHIP_ROLE,
   PROJECT_STATUS,
+  TASK_STATUS,
+  CLOSED_PROJECT_STATUSES,
   USER_ROLE,
   type UserRole,
   type MembershipRole,
@@ -25,10 +26,11 @@ export class ProjectService {
     return role === USER_ROLE.MANAGER || role === USER_ROLE.PROJECT_MANAGER || role === USER_ROLE.ADMIN;
   }
 
-  // Unknown or removed users would otherwise surface as a raw foreign-key 500. Suspended people can't be
-  // newly added, but those `alreadyLinked` stay, so re-saving a form that still lists them keeps working.
+  // Unknown or removed users would otherwise surface as a raw foreign-key 500. Only people being newly
+  // added are checked: those `alreadyLinked` (even if suspended or removed since) stay, so re-saving a form
+  // that still lists them keeps working.
   static async assertActiveUsers(userIds: string[], alreadyLinked: string[] = []) {
-    const unique = [...new Set(userIds)];
+    const unique = [...new Set(userIds)].filter((id) => !alreadyLinked.includes(id));
     if (unique.length === 0) return;
     const found = await prisma.user.findMany({
       where: { id: { in: unique }, deletedAt: null, pendingApproval: false },
@@ -37,7 +39,7 @@ export class ProjectService {
     if (found.length !== unique.length) {
       throw new ApiError(400, "One or more selected people are not active team members");
     }
-    const suspended = found.filter((u) => u.status === "SUSPENDED" && !alreadyLinked.includes(u.id));
+    const suspended = found.filter((u) => u.status === "SUSPENDED");
     if (suspended.length) {
       throw new ApiError(400, `${suspended.map((u) => u.fullName).join(", ")} is suspended and can't be added`);
     }
@@ -81,13 +83,23 @@ export class ProjectService {
     return !!(await prisma.projectMember.findFirst({ where: { projectId, userId, removedAt: null }, select: { id: true } }));
   }
 
-  static async requireProjectRole(projectId: string, userId: string, globalRole: UserRole, needed: ProjectRole) {
+  // Changing anything inside a completed or cancelled project is refused until it is reopened; project-level
+  // actions (editing or reopening the project, its members, deleting it) pass { closedOk: true }
+  static async requireProjectRole(projectId: string, userId: string, globalRole: UserRole, needed: ProjectRole, opts: { closedOk?: boolean } = {}) {
     const role = await this.projectRole(projectId, userId, globalRole);
     if (!role) throw new ApiError(404, "Project not found");
     if (ROLE_RANK[role] < ROLE_RANK[needed]) {
       throw new ApiError(403, needed === "manager" ? "Only this project's managers can do that" : "You have view-only access to this project");
     }
+    if (needed !== "viewer" && !opts.closedOk) await this.assertProjectOpen(projectId);
     return role;
+  }
+
+  static async assertProjectOpen(projectId: string) {
+    const p = await prisma.project.findUnique({ where: { id: projectId }, select: { status: true } });
+    if (p && CLOSED_PROJECT_STATUSES.includes(p.status as ProjectStatus)) {
+      throw new ApiError(409, `This project is ${p.status === PROJECT_STATUS.COMPLETED ? "completed" : "cancelled"}. Reopen it to make changes.`, { code: "PROJECT_CLOSED" });
+    }
   }
 
   static async assertProjectAccess(projectId: string, userId: string, role: UserRole) {
@@ -119,25 +131,6 @@ export class ProjectService {
     if (!project) {
       throw new ApiError(404, "Project not found");
     }
-  }
-
-  // Every dated milestone the person can see, in one query (the Calendar used to fetch each project)
-  static async listMilestones(userId: string, role: UserRole) {
-    const projectWhere = this.isManagerRole(role)
-      ? { deletedAt: null }
-      : {
-          deletedAt: null,
-          OR: [
-            { members: { some: { userId, removedAt: null } } },
-            { tasks: { some: { deletedAt: null, assignees: { some: { id: userId } } } } }
-          ]
-        };
-    const rows = await prisma.milestone.findMany({
-      where: { dueDate: { not: null }, project: projectWhere },
-      select: { id: true, name: true, dueDate: true, projectId: true, project: { select: { name: true } } },
-      orderBy: { dueDate: "asc" }
-    });
-    return rows.map(({ project, ...m }) => ({ ...m, projectName: project.name }));
   }
 
   // shortcut: the UI has no paging and reads one page, so the page is large; add paging to the UI past ~1000 projects
@@ -289,15 +282,11 @@ export class ProjectService {
           where: isMember
             ? { OR: [{ taskId: null }, { task: { deletedAt: null } }] }
             : { task: { deletedAt: null, assignees: { some: { id: userId } } } }
-        },
-        milestones: {
-          orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
-          include: { tasks: { where: { deletedAt: null }, select: { status: true } } }
         }
       }
     });
 
-    const { tasks, members, manager, attachments, milestones, ...projectData } = project;
+    const { tasks, members, manager, attachments, ...projectData } = project;
 
     const tasksWithStatus = tasks.map(({ subtasks, ...task }: any) => ({
       ...task,
@@ -320,12 +309,7 @@ export class ProjectService {
         members: members.map((m: any) => ({ userId: m.userId, role: m.role, user: m.user })),
         teamMemberIds: members.map((m: any) => m.userId),
         attachments: (attachments || []).map(withFileLink),
-        myRole,
-        milestones: milestones.map(({ tasks: mTasks, ...m }) => ({
-          ...m,
-          taskTotal: mTasks.length,
-          taskDone: mTasks.filter((t) => t.status === "DONE").length
-        }))
+        myRole
       },
       tasks: tasksWithStatus,
       users: Array.from(usersMap.values())
@@ -416,9 +400,11 @@ export class ProjectService {
       dueDate?: string | null;
       managerId?: string;
       memberIds?: string[];
+      // Completing a project that still has open tasks: true marks them Done too; otherwise it's refused
+      closeOpenTasks?: boolean;
     }
   ) {
-    await this.requireProjectRole(projectId, userId, userRole, "manager");
+    await this.requireProjectRole(projectId, userId, userRole, "manager", { closedOk: true });
     const existingProject = await this.getById(projectId, userId, userRole);
     const managerId = input.managerId ?? existingProject.managerId;
     // The project manager always stays on the team, even if the form left them out
@@ -435,6 +421,26 @@ export class ProjectService {
     }
 
     const statusChanged = input.status !== undefined && input.status !== existingProject.status;
+    const completing = statusChanged && input.status === PROJECT_STATUS.COMPLETED;
+    const openWhere = { projectId, deletedAt: null, status: { not: TASK_STATUS.DONE } } as const;
+    if (completing) {
+      const open = await prisma.task.count({ where: openWhere });
+      if (open && !input.closeOpenTasks) {
+        throw new ApiError(409, `This project still has ${open} open task${open === 1 ? "" : "s"}.`, { code: "OPEN_TASKS", openTasks: open });
+      }
+      if (open) {
+        // Closed with the project: Done now. Repeating tasks don't make copies (the project is finished).
+        await prisma.task.updateMany({ where: openWhere, data: { status: TASK_STATUS.DONE, completedAt: new Date() } });
+        await ActivityService.log({
+          action: "PROJECT_UPDATED",
+          entityType: "project",
+          entityId: projectId,
+          description: `Marked ${open} open task${open === 1 ? "" : "s"} Done when completing ${existingProject.name}`,
+          userId,
+          projectId
+        });
+      }
+    }
 
     const project = await prisma.project.update({
       where: { id: projectId },
@@ -523,7 +529,7 @@ export class ProjectService {
   }
 
   static async archive(projectId: string, userId: string, userRole: UserRole) {
-    await this.requireProjectRole(projectId, userId, userRole, "manager");
+    await this.requireProjectRole(projectId, userId, userRole, "manager", { closedOk: true });
     const project = await this.getById(projectId, userId, userRole);
 
     // One timestamp for all three, so "Restore" can tell what was removed together with the project
@@ -567,7 +573,7 @@ export class ProjectService {
     userRole: UserRole,
     input: { memberIds: string[]; role?: MembershipRole }
   ) {
-    await this.requireProjectRole(projectId, actorUserId, userRole, "manager");
+    await this.requireProjectRole(projectId, actorUserId, userRole, "manager", { closedOk: true });
     const current = await this.getById(projectId, actorUserId, userRole);
     await this.assertActiveUsers(input.memberIds, current.teamMemberIds);
 
@@ -619,7 +625,7 @@ export class ProjectService {
   }
 
   static async removeMember(projectId: string, memberId: string, actorUserId: string, userRole: UserRole) {
-    await this.requireProjectRole(projectId, actorUserId, userRole, "manager");
+    await this.requireProjectRole(projectId, actorUserId, userRole, "manager", { closedOk: true });
     const membership = await prisma.projectMember.findUnique({
       where: { projectId_userId: { projectId, userId: memberId } }
     });
@@ -655,13 +661,12 @@ export class ProjectService {
     return { success: true };
   }
 
-  // "Start from an existing project": copy its milestones and open plan (tasks, subtasks, labels, estimates),
+  // "Start from an existing project": copy its open plan (tasks, subtasks, labels, estimates, repeats),
   // shifting dates by the gap between the two start dates. Copies start as To Do, assigned to the new manager.
   static async copyPlan(sourceId: string, targetId: string, targetStart: Date | null, assigneeId: string, actorUserId: string) {
     const source = await prisma.project.findUniqueOrThrow({
       where: { id: sourceId },
       include: {
-        milestones: true,
         tasks: { where: { deletedAt: null }, include: { subtasks: { orderBy: { sortOrder: "asc" } } }, orderBy: { sortOrder: "asc" } }
       }
     });
@@ -670,7 +675,6 @@ export class ProjectService {
 
     // Bulk inserts with ids chosen up front, in one transaction: a 200-task template used to cost 400+
     // sequential database trips (~160 ms each live); now it's a handful, and it lands all-or-nothing
-    const milestoneIds = new Map(source.milestones.map((m) => [m.id, randomUUID()]));
     const taskIds = new Set<string>();
     const newTaskId = () => {
       let id = generateShortId();
@@ -681,9 +685,6 @@ export class ProjectService {
     const tasks = source.tasks.map((t) => ({ source: t, id: newTaskId() }));
 
     await prisma.$transaction([
-      prisma.milestone.createMany({
-        data: source.milestones.map((m) => ({ id: milestoneIds.get(m.id)!, projectId: targetId, name: m.name, dueDate: shift(m.dueDate) }))
-      }),
       prisma.task.createMany({
         data: tasks.map(({ source: t, id }) => ({
           id,
@@ -698,7 +699,6 @@ export class ProjectService {
           estimateHours: t.estimateHours,
           recurrence: t.recurrence,
           sortOrder: t.sortOrder,
-          milestoneId: t.milestoneId ? milestoneIds.get(t.milestoneId) ?? null : null,
           createdById: actorUserId
         }))
       }),
@@ -712,7 +712,7 @@ export class ProjectService {
 
   // Per-project role (Owner/Manager/Contributor/Viewer) for one member
   static async setMemberRole(projectId: string, memberId: string, role: MembershipRole, actorUserId: string, userRole: UserRole) {
-    await this.requireProjectRole(projectId, actorUserId, userRole, "manager");
+    await this.requireProjectRole(projectId, actorUserId, userRole, "manager", { closedOk: true });
     const project = await prisma.project.findFirstOrThrow({ where: { id: projectId }, select: { managerId: true, name: true } });
     if (memberId === actorUserId) {
       throw new ApiError(400, "You cannot change your own project role");
@@ -740,31 +740,16 @@ export class ProjectService {
     return { success: true };
   }
 
-  // Create (milestoneId null) or update a milestone; project managers only
-  static async saveMilestone(
-    projectId: string,
-    milestoneId: string | null,
-    input: { name?: string; dueDate?: string | null },
-    actorUserId: string,
-    userRole: UserRole
-  ) {
-    await this.requireProjectRole(projectId, actorUserId, userRole, "manager");
-    const data = {
-      name: input.name,
-      dueDate: input.dueDate === undefined ? undefined : input.dueDate ? new Date(input.dueDate) : null
-    };
-    const milestone = milestoneId
-      ? await prisma.milestone.update({ where: { id: milestoneId, projectId }, data })
-      : await prisma.milestone.create({ data: { projectId, name: input.name!, dueDate: data.dueDate ?? null } });
-    socketService.emitToProject(projectId, "project_updated", { id: projectId });
-    return milestone;
-  }
-
-  static async deleteMilestone(projectId: string, milestoneId: string, actorUserId: string, userRole: UserRole) {
-    await this.requireProjectRole(projectId, actorUserId, userRole, "manager");
-    // Tasks keep existing; their milestone link clears (onDelete: SetNull)
-    await prisma.milestone.delete({ where: { id: milestoneId, projectId } });
-    socketService.emitToProject(projectId, "project_updated", { id: projectId });
+  // The project's manager was removed from the workspace: the person acting takes over, as a project manager
+  static async takeOverManager(projectId: string, actorUserId: string) {
+    await prisma.$transaction([
+      prisma.project.update({ where: { id: projectId }, data: { managerId: actorUserId } }),
+      prisma.projectMember.upsert({
+        where: { projectId_userId: { projectId, userId: actorUserId } },
+        update: { removedAt: null, role: MEMBERSHIP_ROLE.MANAGER },
+        create: { projectId, userId: actorUserId, role: MEMBERSHIP_ROLE.MANAGER }
+      })
+    ]);
   }
 
   // Recently deleted: projects and tasks soft-deleted in the last 30 days (company-wide managers only)
@@ -819,8 +804,10 @@ export class ProjectService {
     await prisma.$transaction([
       prisma.project.update({ where: { id: projectId }, data: { deletedAt: null } }),
       prisma.task.updateMany({ where: { projectId, deletedAt: { gte: from, lte: to } }, data: { deletedAt: null } }),
-      prisma.projectMember.updateMany({ where: { projectId, removedAt: { gte: from, lte: to } }, data: { removedAt: null } })
+      prisma.projectMember.updateMany({ where: { projectId, removedAt: { gte: from, lte: to }, user: { deletedAt: null } }, data: { removedAt: null } })
     ]);
+    const manager = await prisma.user.findUnique({ where: { id: project.managerId }, select: { deletedAt: true } });
+    if (!manager || manager.deletedAt) await this.takeOverManager(projectId, actorUserId);
     await ActivityService.log({
       action: "PROJECT_UPDATED",
       entityType: "project",

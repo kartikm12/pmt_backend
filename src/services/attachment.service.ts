@@ -132,6 +132,7 @@ export class AttachmentService {
       role
     });
 
+    if (attachment.projectId) await ProjectService.assertProjectOpen(attachment.projectId);
     const projectRole = attachment.projectId ? await ProjectService.projectRole(attachment.projectId, userId, role) : null;
     if (projectRole !== "manager" && attachment.userId !== userId) {
       throw new ApiError(403, "You do not have permission to delete this attachment");

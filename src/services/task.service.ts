@@ -1,4 +1,5 @@
 import { prisma } from "../prisma/client.js";
+import { formatRule, nextOccurrence, normalizeRule, parseRule, upcoming, utcDate } from "../utils/repeatRule.js";
 import { KEEP_DAYS, pastKeep } from "./trash-cleanup.service.js";
 import { TASK_STATUS, type UserRole } from "../constants/enums.js";
 import { ApiError } from "../utils/apiError.js";
@@ -7,10 +8,10 @@ import { NotificationService } from "./notification.service.js";
 import { socketService } from "./socket.service.js";
 import { generateShortId } from "../utils/id.js";
 import { ProjectService, type ProjectRole } from "./project.service.js";
+import { LIVE_PROJECT_STATUSES, type ProjectStatus } from "../constants/enums.js";
 
 type Status = "TODO" | "IN_PROGRESS" | "REVIEW" | "DONE";
 type Priority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
-type Recurrence = "DAILY" | "WEEKLY" | "MONTHLY";
 
 type TaskFields = {
   title?: string;
@@ -24,8 +25,7 @@ type TaskFields = {
   sortOrder?: number;
   labels?: string[];
   estimateHours?: number | null;
-  recurrence?: Recurrence | null;
-  milestoneId?: string | null;
+  recurrence?: string | null;
   blockedByIds?: string[];
 };
 
@@ -109,7 +109,6 @@ export class TaskService {
         project: {
           select: { id: true, name: true, slug: true, status: true }
         },
-        milestone: { select: { id: true, name: true, dueDate: true } },
         subtasks: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
         blockedBy: { where: { deletedAt: null }, select: { id: true, title: true, status: true } },
         blocks: { where: { deletedAt: null }, select: { id: true, title: true, status: true } },
@@ -137,12 +136,8 @@ export class TaskService {
     return { ...task, myRole };
   }
 
-  // Milestones and blockers must belong to the task's own project; a task can't block itself
-  static async assertLinksInProject(projectId: string, input: { milestoneId?: string | null; blockedByIds?: string[] }, selfId?: string) {
-    if (input.milestoneId) {
-      const ok = await prisma.milestone.count({ where: { id: input.milestoneId, projectId } });
-      if (!ok) throw new ApiError(400, "That milestone belongs to another project");
-    }
+  // Blockers must belong to the task's own project; a task can't block itself
+  static async assertLinksInProject(projectId: string, input: { blockedByIds?: string[] }, selfId?: string) {
     if (input.blockedByIds?.length) {
       const ids = [...new Set(input.blockedByIds)];
       if (selfId && ids.includes(selfId)) throw new ApiError(400, "A task can't be blocked by itself");
@@ -150,7 +145,7 @@ export class TaskService {
         where: { id: { in: ids }, projectId, deletedAt: null },
         select: { id: true, blockedBy: { select: { id: true } } }
       });
-      if (found.length !== ids.length) throw new ApiError(400, "Blocking tasks must be open tasks in the same project");
+      if (found.length !== ids.length) throw new ApiError(400, "Blocking tasks must be tasks in the same project");
       // shortcut: only direct two-way loops are refused; longer chains are allowed and just show warnings
       if (selfId && found.some((t) => t.blockedBy.some((b) => b.id === selfId))) {
         throw new ApiError(400, "Those two tasks would block each other");
@@ -188,8 +183,7 @@ export class TaskService {
         sortOrder: input.sortOrder ?? 0,
         labels: input.labels ?? [],
         estimateHours: input.estimateHours ?? null,
-        recurrence: input.recurrence ?? null,
-        milestoneId: input.milestoneId ?? null,
+        recurrence: input.recurrence ? normalizeRule(input.recurrence, input.dueDate ? new Date(input.dueDate) : null) : null,
         blockedBy: input.blockedByIds?.length ? { connect: input.blockedByIds.map((id) => ({ id })) } : undefined,
         startedAt: input.status === TASK_STATUS.IN_PROGRESS ? new Date() : null,
         completedAt: input.status === TASK_STATUS.DONE ? new Date() : null
@@ -210,16 +204,19 @@ export class TaskService {
     return this.getById(task.id);
   }
 
-  static async announceNewTask(task: { id: string; title: string; projectId: string; status: string }, assigneeIds: string[]) {
+  // A repeating task's next copy is announced in the bell only: a daily task would otherwise email every day
+  static async announceNewTask(task: { id: string; title: string; projectId: string; status: string }, assigneeIds: string[], opts: { repeatDue?: Date } = {}) {
     for (const assigneeId of assigneeIds) {
       await NotificationService.create({
         userId: assigneeId,
         type: "TASK_ASSIGNED",
-        title: "New Task Assigned",
-        message: `A new task '${task.title}' has been assigned to you`,
+        title: opts.repeatDue ? "Repeating task ready" : "New Task Assigned",
+        message: opts.repeatDue
+          ? `The next '${task.title}' is ready, due ${opts.repeatDue.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })}`
+          : `A new task '${task.title}' has been assigned to you`,
         projectId: task.projectId,
         taskId: task.id,
-        email: true
+        email: !opts.repeatDue
       });
       socketService.emitToUser(assigneeId, "task_assigned", { taskId: task.id, title: task.title, projectId: task.projectId });
     }
@@ -247,10 +244,10 @@ export class TaskService {
     }
 
     const targetProjectId = input.projectId ?? existingTask.projectId;
-    if (isManager && input.projectId && input.projectId !== existingTask.projectId) {
-      await ProjectService.requireProjectRole(input.projectId, actorUserId, userRole as UserRole, "manager");
-      // Milestones and blockers don't travel to another project
-      input.milestoneId ??= null;
+    const moved = isManager && !!input.projectId && input.projectId !== existingTask.projectId;
+    if (moved) {
+      await ProjectService.requireProjectRole(targetProjectId, actorUserId, userRole as UserRole, "manager");
+      // Blockers don't travel to another project
       input.blockedByIds ??= [];
     }
     await this.assertLinksInProject(targetProjectId, input, taskId);
@@ -288,8 +285,7 @@ export class TaskService {
         sortOrder: input.sortOrder,
         labels: input.labels,
         estimateHours: input.estimateHours,
-        recurrence: input.recurrence,
-        milestoneId: input.milestoneId,
+        recurrence: input.recurrence === undefined ? undefined : input.recurrence ? normalizeRule(input.recurrence, newDue ?? existingTask.dueDate) : null,
         blockedBy: input.blockedByIds === undefined ? undefined : { set: input.blockedByIds.map((id) => ({ id })) },
         startedAt:
           input.status === TASK_STATUS.IN_PROGRESS && !existingTask.startedAt ? new Date() : undefined,
@@ -388,6 +384,11 @@ export class TaskService {
       status: updatedTask.status
     });
 
+    if (moved) {
+      // Moving takes the task out of its old project's dependencies both ways, and its files go with it
+      sideEffects.push(prisma.task.update({ where: { id: taskId }, data: { blocks: { set: [] } } }));
+      sideEffects.push(prisma.attachment.updateMany({ where: { taskId }, data: { projectId: targetProjectId } }));
+    }
     if (statusChanged && updatedTask.status === TASK_STATUS.DONE && updatedTask.recurrence && !updatedTask.nextOccurrenceId) {
       sideEffects.push(this.spawnNextOccurrence(taskId, actorUserId));
     }
@@ -397,31 +398,32 @@ export class TaskService {
     return fresh;
   }
 
-  // Recurring task finished: create the next one (once; nextOccurrenceId guards re-completing)
+  // Repeating task finished: create the next one, once (nextOccurrenceId guards re-completing and two
+  // "done" clicks at the same moment). The next deadline follows the rule from the current deadline but is
+  // never in the past, so a late finish doesn't create an overdue copy. COUNT/UNTIL end the series.
   static async spawnNextOccurrence(taskId: string, actorUserId: string) {
-    // Claim first: two "done" requests at the same moment must not both create the next copy
-    const nextId = generateShortId();
-    const claim = await prisma.task.updateMany({ where: { id: taskId, nextOccurrenceId: null }, data: { nextOccurrenceId: nextId } });
-    if (claim.count === 0) return;
     const t = await prisma.task.findUniqueOrThrow({
       where: { id: taskId },
-      include: { assignees: { where: { deletedAt: null, status: { not: "SUSPENDED" } }, select: { id: true } }, subtasks: true }
-    });
-    const step = (d: Date | null) => {
-      if (!d) return null;
-      const next = new Date(d);
-      if (t.recurrence === "DAILY") next.setDate(next.getDate() + 1);
-      else if (t.recurrence === "WEEKLY") next.setDate(next.getDate() + 7);
-      else {
-        // Monthly: the 31st becomes the last day of a shorter month (setMonth alone rolls Jan 31 to Mar 3)
-        const day = next.getDate();
-        next.setDate(1);
-        next.setMonth(next.getMonth() + 1);
-        const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-        next.setDate(Math.min(day, lastDay));
+      include: {
+        assignees: { where: { deletedAt: null, status: { not: "SUSPENDED" } }, select: { id: true } },
+        watchers: { where: { deletedAt: null, status: { not: "SUSPENDED" } }, select: { id: true } },
+        subtasks: true
       }
-      return next;
-    };
+    });
+    const project = await prisma.project.findUnique({ where: { id: t.projectId }, select: { status: true, deletedAt: true } });
+    if (!project || project.deletedAt || !LIVE_PROJECT_STATUSES.includes(project.status as ProjectStatus)) return null;
+    const ruleText = t.recurrence ? normalizeRule(t.recurrence, t.dueDate) : null;
+    const rule = ruleText ? parseRule(ruleText) : null;
+    if (!rule || rule.count === 1) return null;
+    const anchor = t.dueDate ?? new Date();
+    const nextDue = nextOccurrence(rule, anchor, new Date());
+    if (!nextDue) return null;
+
+    const nextId = generateShortId();
+    const claim = await prisma.task.updateMany({ where: { id: taskId, nextOccurrenceId: null }, data: { nextOccurrenceId: nextId } });
+    if (claim.count === 0) return null;
+    // A start date keeps the same lead time before the deadline
+    const nextStart = t.startDate && t.dueDate ? new Date(nextDue.getTime() - (utcDate(t.dueDate).getTime() - utcDate(t.startDate).getTime())) : null;
     const next = await prisma.task.create({
       data: {
         id: nextId,
@@ -429,16 +431,16 @@ export class TaskService {
         description: t.description,
         priority: t.priority,
         status: "TODO",
-        dueDate: step(t.dueDate ?? new Date()),
-        startDate: step(t.startDate),
+        dueDate: nextDue,
+        startDate: nextStart,
         projectId: t.projectId,
         createdById: actorUserId,
         sortOrder: t.sortOrder,
         labels: t.labels,
         estimateHours: t.estimateHours,
-        recurrence: t.recurrence,
-        milestoneId: t.milestoneId,
+        recurrence: formatRule({ ...rule, count: rule.count ? rule.count - 1 : undefined }),
         assignees: { connect: t.assignees },
+        watchers: { connect: t.watchers },
         subtasks: { create: t.subtasks.map((s) => ({ title: s.title, sortOrder: s.sortOrder })) }
       }
     });
@@ -446,13 +448,21 @@ export class TaskService {
       action: "TASK_CREATED",
       entityType: "task",
       entityId: next.id,
-      description: `Created the next ${t.recurrence!.toLowerCase()} occurrence of ${t.title}`,
+      description: `Created the next one of repeating task ${t.title}`,
       userId: actorUserId,
       projectId: t.projectId,
       taskId: next.id
     });
-    await this.announceNewTask(next, t.assignees.map((a) => a.id));
+    await this.announceNewTask(next, t.assignees.map((a) => a.id), { repeatDue: nextDue });
     return next;
+  }
+
+  static repeatPreview(ruleText: string, due: string | undefined) {
+    const anchor = due && !isNaN(Date.parse(due)) ? new Date(due) : new Date();
+    const normalized = normalizeRule(ruleText, anchor);
+    const rule = normalized ? parseRule(normalized) : null;
+    if (!rule) throw new ApiError(400, "That repeat setting isn't valid");
+    return { rule: normalized, next: upcoming(rule, anchor, 3).map((d) => d.toISOString().slice(0, 10)) };
   }
 
   static async remove(taskId: string, actorUserId: string, actorRole: UserRole) {

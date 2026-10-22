@@ -152,6 +152,7 @@ export class CommentService {
     const task = await TaskService.getById(comment.task.id, userId, role);
 
     // Managers of this project can delete any comment (moderation); others only their own
+    await ProjectService.assertProjectOpen(task.projectId);
     const isManager = (await ProjectService.projectRole(task.projectId, userId, role)) === "manager";
 
     if (!isManager && comment.userId !== userId) {
@@ -178,6 +179,7 @@ export class CommentService {
     if (comment.userId !== userId) {
       throw new ApiError(403, "You can only edit your own comments");
     }
+    await ProjectService.assertProjectOpen(task.projectId);
 
     const updated = await prisma.taskComment.update({
       where: { id: commentId },

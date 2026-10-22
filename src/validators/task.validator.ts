@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeRule } from "../utils/repeatRule.js";
 import { TASK_PRIORITY, TASK_STATUS } from "../constants/enums.js";
 
 // Shared by create and update: the 14 Oct planning fields
@@ -6,8 +7,8 @@ const planningFields = {
   startDate: z.string().datetime().nullable().optional(),
   labels: z.array(z.string().trim().min(1).max(30)).max(10).optional(),
   estimateHours: z.number().min(0).max(1000).nullable().optional(),
-  recurrence: z.enum(["DAILY", "WEEKLY", "MONTHLY"]).nullable().optional(),
-  milestoneId: z.string().min(1).nullable().optional(),
+  // A repeat rule (utils/repeatRule.ts) or the old DAILY / WEEKLY / MONTHLY
+  recurrence: z.string().max(200).refine((v) => normalizeRule(v, null) !== null, "That repeat setting isn't valid").nullable().optional(),
   blockedByIds: z.array(z.string().min(1)).max(50).optional()
 };
 

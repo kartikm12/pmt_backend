@@ -42,6 +42,11 @@ export class NotificationService {
     emailLink?: string;
   }) {
     const { email, emailLink, ...data } = input;
+    const active = await prisma.user.findFirst({
+      where: { id: data.userId, deletedAt: null, pendingApproval: false, status: { not: "SUSPENDED" } },
+      select: { id: true }
+    });
+    if (!active) return null;
     const notification = await prisma.notification.create({
       data
     });

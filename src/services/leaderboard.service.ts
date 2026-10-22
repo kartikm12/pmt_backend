@@ -1,6 +1,7 @@
 import { prisma } from "../prisma/client.js";
 import { TASK_STATUS, TASK_PRIORITY, PROJECT_STATUS } from "../constants/enums.js";
 import { subDays, addDays, startOfDay, startOfToday, isBefore, isAfter } from "date-fns";
+import { LIVE_PROJECT_STATUSES, type ProjectStatus } from "../constants/enums.js";
 
 // Deadlines are dates (stored as that day's 00:00): work is overdue only once the day is over,
 // and finishing any time on the due day counts as on time, as everywhere else in the app
@@ -72,7 +73,8 @@ export class LeaderboardService {
             priority: true,
             dueDate: true,
             completedAt: true,
-            createdAt: true
+            createdAt: true,
+            project: { select: { status: true } }
           }
         },
         managedProjects: {
@@ -104,7 +106,8 @@ export class LeaderboardService {
       // --- Task Scoring ---
       user.assignedTasks.forEach(task => {
         const isDone = task.status === TASK_STATUS.DONE;
-        const isOverdue = !isDone && task.dueDate && isPastDue(new Date(task.dueDate));
+        // Work in paused, finished or cancelled projects isn't held against anyone
+        const isOverdue = !isDone && task.dueDate && isPastDue(new Date(task.dueDate)) && LIVE_PROJECT_STATUSES.includes(task.project.status as ProjectStatus);
 
         if (isDone && task.completedAt && isAfter(new Date(task.completedAt), startDate)) {
           completedTasks++;
@@ -139,7 +142,7 @@ export class LeaderboardService {
       // --- Project Scoring (for Managers) ---
       user.managedProjects.forEach(project => {
         const isDone = project.status === PROJECT_STATUS.COMPLETED;
-        const isOverdue = !isDone && project.dueDate && isPastDue(new Date(project.dueDate));
+        const isOverdue = !isDone && project.dueDate && isPastDue(new Date(project.dueDate)) && LIVE_PROJECT_STATUSES.includes(project.status as ProjectStatus);
 
         if (isDone) {
           totalProjects++;

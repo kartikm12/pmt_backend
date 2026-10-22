@@ -1,6 +1,7 @@
 import { prisma } from "../prisma/client.js";
 import { PROJECT_STATUS, TASK_STATUS } from "../constants/enums.js";
 import { addDays, differenceInCalendarDays, endOfDay, startOfDay, startOfToday, subDays, format } from "date-fns";
+import { NOT_IN_PAUSED_PROJECT } from "../constants/enums.js";
 
 const MANAGER_ROLES = ["ADMIN", "MANAGER", "PROJECT_MANAGER"];
 
@@ -121,11 +122,11 @@ export class ReportsService {
       prisma.task.count({ where: { ...taskBaseWhere, status: TASK_STATUS.DONE } }),
       prisma.task.count({ where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE } } }),
       prisma.task.count({
-        where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } }
+        where: { ...taskBaseWhere, ...NOT_IN_PAUSED_PROJECT, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } }
       }),
       prisma.task.groupBy({
         by: ["projectId"],
-        where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } },
+        where: { ...taskBaseWhere, ...NOT_IN_PAUSED_PROJECT, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } },
         _count: true
       })
     ]);

@@ -19,7 +19,7 @@ export function errorHandler(
   _next: NextFunction
 ) {
   if (error instanceof ApiError) {
-    return res.status(error.statusCode).json({ message: error.message });
+    return res.status(error.statusCode).json({ ...error.details, message: error.message });
   }
 
   if (error instanceof ZodError) {

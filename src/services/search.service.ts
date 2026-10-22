@@ -2,6 +2,7 @@ import { startOfToday, startOfWeek } from "date-fns";
 import { prisma } from "../prisma/client.js";
 import type { UserRole } from "../constants/enums.js";
 import { ProjectService } from "./project.service.js";
+import { LIVE_PROJECT_STATUSES, type ProjectStatus } from "../constants/enums.js";
 
 const LIMIT = 8;
 
@@ -59,9 +60,9 @@ export class SearchService {
         avatarUrl: true,
         assignedTasks: {
           where: { deletedAt: null, status: { not: "DONE" }, project: { deletedAt: null } },
-          select: { dueDate: true, estimateHours: true }
+          select: { dueDate: true, estimateHours: true, project: { select: { status: true } } }
         },
-        timeEntries: { where: { spentOn: { gte: weekStart } }, select: { minutes: true } }
+        timeEntries: { where: { spentOn: { gte: weekStart }, task: { deletedAt: null, project: { deletedAt: null } } }, select: { minutes: true } }
       }
     });
     return users
@@ -71,7 +72,7 @@ export class SearchService {
         title: u.title,
         avatarUrl: u.avatarUrl,
         openTasks: u.assignedTasks.length,
-        overdueTasks: u.assignedTasks.filter((t) => t.dueDate && t.dueDate < today).length,
+        overdueTasks: u.assignedTasks.filter((t) => t.dueDate && t.dueDate < today && LIVE_PROJECT_STATUSES.includes(t.project.status as ProjectStatus)).length,
         estimatedHours: Math.round(u.assignedTasks.reduce((s, t) => s + (t.estimateHours ?? 0), 0) * 10) / 10,
         loggedHoursThisWeek: Math.round((u.timeEntries.reduce((s, e) => s + e.minutes, 0) / 60) * 10) / 10
       }))

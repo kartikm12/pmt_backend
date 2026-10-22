@@ -1,6 +1,7 @@
 import { prisma } from "../prisma/client.js";
 import { PROJECT_STATUS, TASK_STATUS, USER_ROLE, type UserRole } from "../constants/enums.js";
 import { startOfToday } from "date-fns";
+import { NOT_IN_PAUSED_PROJECT } from "../constants/enums.js";
 
 export class DashboardService {
   static async getStats(userId: string, role: UserRole) {
@@ -42,7 +43,8 @@ export class DashboardService {
         where: {
           status: { not: TASK_STATUS.DONE },
           dueDate: { lt: startOfToday() },
-          ...taskWhere
+          ...taskWhere,
+          ...NOT_IN_PAUSED_PROJECT
         }
       }),
       prisma.task.findMany({
