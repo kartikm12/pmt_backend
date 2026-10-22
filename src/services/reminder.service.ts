@@ -18,8 +18,12 @@ export class ReminderService {
       title: true,
       projectId: true,
       dueDate: true,
-      assignees: { where: { deletedAt: null, status: { not: "SUSPENDED" as const } }, select: { id: true } }
+      assignees: { where: { deletedAt: null, status: { not: "SUSPENDED" as const } }, select: { id: true } },
+      project: { select: { managerId: true } }
     };
+    // Nobody active is assigned (everyone removed or suspended): tell the project's manager instead
+    const recipients = (task: { assignees: { id: string }[]; project: { managerId: string } }) =>
+      task.assignees.length ? { ids: task.assignees.map((a) => a.id), orphan: false } : { ids: [task.project.managerId], orphan: true };
 
     const dueSoon = await prisma.task.findMany({
       where: { ...openTask, dueSoonNotifiedAt: null, dueDate: { gte: today, lt: addDays(today, 2) } },
@@ -36,12 +40,13 @@ export class ReminderService {
       const claim = await prisma.task.updateMany({ where: { id: task.id, dueSoonNotifiedAt: null }, data: { dueSoonNotifiedAt: now } });
       if (claim.count === 0) continue;
       const when = isSameDay(task.dueDate!, now) ? "today" : "tomorrow";
-      for (const { id } of task.assignees) {
+      const to = recipients(task);
+      for (const id of to.ids) {
         await NotificationService.create({
           userId: id,
           type: "TASK_DUE_SOON",
           title: "Task due soon",
-          message: `'${task.title}' is due ${when}`,
+          message: `'${task.title}' is due ${when}${to.orphan ? ", and nobody active is assigned to it" : ""}`,
           projectId: task.projectId,
           taskId: task.id,
           email: true
@@ -52,12 +57,13 @@ export class ReminderService {
     for (const task of overdue) {
       const claim = await prisma.task.updateMany({ where: { id: task.id, overdueNotifiedAt: null }, data: { overdueNotifiedAt: now } });
       if (claim.count === 0) continue;
-      for (const { id } of task.assignees) {
+      const to = recipients(task);
+      for (const id of to.ids) {
         await NotificationService.create({
           userId: id,
           type: "TASK_OVERDUE",
           title: "Task overdue",
-          message: `'${task.title}' was due on ${format(task.dueDate!, "MMM d")}`,
+          message: `'${task.title}' was due on ${format(task.dueDate!, "MMM d")}${to.orphan ? ", and nobody active is assigned to it" : ""}`,
           projectId: task.projectId,
           taskId: task.id,
           email: true

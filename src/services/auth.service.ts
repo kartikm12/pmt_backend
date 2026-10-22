@@ -29,7 +29,9 @@ export class AuthService {
     // A removed member keeps their row (soft delete), so a re-invite revives it instead of failing on the unique email
     const canRevive = existingUser?.deletedAt && input.isInvited;
     if (existingUser && !canRevive) {
-      throw new ApiError(409, "User with this email already exists");
+      if (existingUser.deletedAt) throw new ApiError(409, "This email belonged to someone who was removed from the team. Ask a manager to add you back.");
+      if (existingUser.pendingApproval && input.isInvited) throw new ApiError(409, "This person has already signed up and is waiting for approval. Approve them on the Team page.");
+      throw new ApiError(409, "An account with this email already exists");
     }
 
     const passwordHash = await bcrypt.hash(input.password, env.BCRYPT_ROUNDS);
@@ -44,7 +46,8 @@ export class AuthService {
     };
 
     const user = canRevive
-      ? await prisma.user.update({ where: { id: existingUser.id }, data: { ...data, deletedAt: null, title: null } })
+      // Back as a fresh, active account (they may have been suspended before they were removed)
+      ? await prisma.user.update({ where: { id: existingUser.id }, data: { ...data, deletedAt: null, title: null, status: "ACTIVE", pendingApproval: false } })
       : await prisma.user.create({ data });
 
     const { passwordHash: _, ...userWithoutPassword } = user;

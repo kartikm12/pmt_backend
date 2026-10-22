@@ -26,6 +26,7 @@ type TaskFields = {
   labels?: string[];
   estimateHours?: number | null;
   recurrence?: string | null;
+  addAssigneeIds?: string[];
   blockedByIds?: string[];
 };
 
@@ -253,6 +254,10 @@ export class TaskService {
     await this.assertLinksInProject(targetProjectId, input, taskId);
     // People already on the task stay assignable even if suspended since; only new picks are checked
     if (input.assigneeIds) await ProjectService.assertActiveUsers(input.assigneeIds, existingTask.assignees.map((a) => a.id));
+    if (input.addAssigneeIds?.length) {
+      await ProjectService.assertActiveUsers(input.addAssigneeIds, existingTask.assignees.map((a) => a.id));
+      if (!input.assigneeIds) input.assigneeIds = [...new Set([...existingTask.assignees.map((a) => a.id), ...input.addAssigneeIds])];
+    }
 
     // Only stamp completion when the status actually changes; the edit form always resends the status,
     // which used to reset completedAt on every save and skew the leaderboard and reports
@@ -388,6 +393,12 @@ export class TaskService {
       // Moving takes the task out of its old project's dependencies both ways, and its files go with it
       sideEffects.push(prisma.task.update({ where: { id: taskId }, data: { blocks: { set: [] } } }));
       sideEffects.push(prisma.attachment.updateMany({ where: { taskId }, data: { projectId: targetProjectId } }));
+      sideEffects.push((async () => {
+        const watchers = await prisma.user.findMany({ where: { watchedTasks: { some: { id: taskId } } }, select: { id: true, role: true } });
+        const lost = [];
+        for (const w of watchers) if (!(await ProjectService.projectRole(targetProjectId, w.id, w.role as UserRole))) lost.push({ id: w.id });
+        if (lost.length) await prisma.task.update({ where: { id: taskId }, data: { watchers: { disconnect: lost } } });
+      })());
     }
     if (statusChanged && updatedTask.status === TASK_STATUS.DONE && updatedTask.recurrence && !updatedTask.nextOccurrenceId) {
       sideEffects.push(this.spawnNextOccurrence(taskId, actorUserId));

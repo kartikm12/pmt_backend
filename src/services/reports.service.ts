@@ -17,7 +17,11 @@ export class ReportsService {
 
     if (!isManager) {
       taskBaseWhere.assignees = { some: { id: userId } };
-      projectBaseWhere.members = { some: { userId, removedAt: null } };
+      // Same rule as the dashboard: projects you're in, or where you have tasks
+      projectBaseWhere.OR = [
+        { members: { some: { userId, removedAt: null } } },
+        { tasks: { some: { deletedAt: null, assignees: { some: { id: userId } } } } }
+      ];
       // Normal users only see their own activities or activities on tasks/projects they are part of.
       activityBaseWhere.OR = [
         { userId: userId },
@@ -34,7 +38,10 @@ export class ReportsService {
     // Only managers may look at another person's numbers; for anyone else it would replace their own scope
     if (filters.memberId && isManager) {
       taskBaseWhere.assignees = { some: { id: filters.memberId } };
-      projectBaseWhere.members = { some: { userId: filters.memberId } };
+      projectBaseWhere.OR = [
+        { members: { some: { userId: filters.memberId, removedAt: null } } },
+        { tasks: { some: { deletedAt: null, assignees: { some: { id: filters.memberId } } } } }
+      ];
       activityBaseWhere.userId = filters.memberId;
     }
 

@@ -421,6 +421,10 @@ export class ProjectService {
     }
 
     const statusChanged = input.status !== undefined && input.status !== existingProject.status;
+    // Not refused, just reported back: tasks due after the (new) end date
+    const tasksAfterEnd = input.dueDate && dueDate
+      ? await prisma.task.count({ where: { projectId, deletedAt: null, status: { not: TASK_STATUS.DONE }, dueDate: { gt: dueDate } } })
+      : 0;
     const completing = statusChanged && input.status === PROJECT_STATUS.COMPLETED;
     const openWhere = { projectId, deletedAt: null, status: { not: TASK_STATUS.DONE } } as const;
     if (completing) {
@@ -525,7 +529,7 @@ export class ProjectService {
     const { tasks: _tasks, ...projectPayload } = updatedProject;
     const removedIds = existingProject.teamMemberIds.filter((id) => !updatedProject.teamMemberIds.includes(id));
     await this.broadcastProjectUpdate(project.id, projectPayload, removedIds);
-    return updatedProject;
+    return { ...updatedProject, tasksAfterEnd };
   }
 
   static async archive(projectId: string, userId: string, userRole: UserRole) {

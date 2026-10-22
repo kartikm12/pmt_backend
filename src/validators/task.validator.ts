@@ -8,6 +8,8 @@ const planningFields = {
   labels: z.array(z.string().trim().min(1).max(30)).max(10).optional(),
   estimateHours: z.number().min(0).max(1000).nullable().optional(),
   // A repeat rule (utils/repeatRule.ts) or the old DAILY / WEEKLY / MONTHLY
+  // Adds people without touching the rest (bulk Assign); assigneeIds replaces the whole list
+  addAssigneeIds: z.array(z.string().min(1)).max(50).optional(),
   recurrence: z.string().max(200).refine((v) => normalizeRule(v, null) !== null, "That repeat setting isn't valid").nullable().optional(),
   blockedByIds: z.array(z.string().min(1)).max(50).optional()
 };
