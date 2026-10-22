@@ -61,20 +61,42 @@ export class ProjectService {
   // membership role decides (OWNER/MANAGER manage, VIEWER only reads). Task assignees who aren't
   // members keep contributor access, as before. null = no access (deleted or unseen project).
   static async projectRole(projectId: string, userId: string, globalRole: UserRole): Promise<ProjectRole | null> {
+    return (await this.roleAndStatus(projectId, userId, globalRole)).role;
+  }
+
+  // The role and the project's status in one database trip (requireProjectRole needs both)
+  private static async roleAndStatus(projectId: string, userId: string, globalRole: UserRole) {
     const project = await prisma.project.findFirst({
       where: { id: projectId, deletedAt: null },
       select: {
+        status: true,
         members: { where: { userId, removedAt: null }, select: { role: true } },
         tasks: { where: { deletedAt: null, assignees: { some: { id: userId } } }, select: { id: true }, take: 1 }
       }
     });
-    if (!project) return null;
+    if (!project) return { role: null, status: null };
+    return { role: this.roleFrom(globalRole, project.members[0]?.role, project.tasks.length > 0), status: project.status as ProjectStatus };
+  }
+
+  // The rule itself, shared with TaskService.access (which reads the same facts in its own query)
+  static roleFrom(globalRole: UserRole, membership: string | undefined, assignedHere: boolean): ProjectRole | null {
     if (this.isManagerRole(globalRole)) return "manager";
-    const membership = project.members[0]?.role;
     if (membership === MEMBERSHIP_ROLE.OWNER || membership === MEMBERSHIP_ROLE.MANAGER) return "manager";
     if (membership === MEMBERSHIP_ROLE.VIEWER) return "viewer";
-    if (membership || project.tasks.length) return "contributor";
+    if (membership || assignedHere) return "contributor";
     return null;
+  }
+
+  // Same answers as requireProjectRole, for callers that already know the role and the project's status
+  static checkRole(role: ProjectRole | null, status: string | null | undefined, needed: ProjectRole, opts: { closedOk?: boolean } = {}) {
+    if (!role) throw new ApiError(404, "Project not found");
+    if (ROLE_RANK[role] < ROLE_RANK[needed]) {
+      throw new ApiError(403, needed === "manager" ? "Only this project's managers can do that" : "You have view-only access to this project");
+    }
+    if (needed !== "viewer" && !opts.closedOk && status && CLOSED_PROJECT_STATUSES.includes(status as ProjectStatus)) {
+      throw new ApiError(409, `This project is ${status === PROJECT_STATUS.COMPLETED ? "completed" : "cancelled"}. Reopen it to make changes.`, { code: "PROJECT_CLOSED" });
+    }
+    return role;
   }
 
   // A real member (or a company manager) sees the whole project; someone only assigned a task sees just that work
@@ -86,19 +108,19 @@ export class ProjectService {
   // Changing anything inside a completed or cancelled project is refused until it is reopened; project-level
   // actions (editing or reopening the project, its members, deleting it) pass { closedOk: true }
   static async requireProjectRole(projectId: string, userId: string, globalRole: UserRole, needed: ProjectRole, opts: { closedOk?: boolean } = {}) {
-    const role = await this.projectRole(projectId, userId, globalRole);
-    if (!role) throw new ApiError(404, "Project not found");
-    if (ROLE_RANK[role] < ROLE_RANK[needed]) {
-      throw new ApiError(403, needed === "manager" ? "Only this project's managers can do that" : "You have view-only access to this project");
-    }
-    if (needed !== "viewer" && !opts.closedOk) await this.assertProjectOpen(projectId);
-    return role;
+    // One trip for both the role and "is the project closed" (they used to be two in a row)
+    const { role, status } = await this.roleAndStatus(projectId, userId, globalRole);
+    return this.checkRole(role, status, needed, opts);
   }
 
   static async assertProjectOpen(projectId: string) {
     const p = await prisma.project.findUnique({ where: { id: projectId }, select: { status: true } });
-    if (p && CLOSED_PROJECT_STATUSES.includes(p.status as ProjectStatus)) {
-      throw new ApiError(409, `This project is ${p.status === PROJECT_STATUS.COMPLETED ? "completed" : "cancelled"}. Reopen it to make changes.`, { code: "PROJECT_CLOSED" });
+    this.assertOpenStatus(p?.status);
+  }
+
+  static assertOpenStatus(status: string | null | undefined) {
+    if (status && CLOSED_PROJECT_STATUSES.includes(status as ProjectStatus)) {
+      throw new ApiError(409, `This project is ${status === PROJECT_STATUS.COMPLETED ? "completed" : "cancelled"}. Reopen it to make changes.`, { code: "PROJECT_CLOSED" });
     }
   }
 
@@ -270,7 +292,9 @@ export class ProjectService {
           orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
           include: {
             assignees: {
-              select: { id: true, fullName: true, email: true, avatarUrl: true, title: true, status: true }
+              select: { id: true, fullName: true, email: true, avatarUrl: true, title: true, status: true },
+              // Same order as the task list and task page: by name
+              orderBy: [{ fullName: "asc" }, { id: "asc" }]
             },
             attachments: true,
             subtasks: { select: { done: true } },

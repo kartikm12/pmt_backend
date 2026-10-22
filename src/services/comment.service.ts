@@ -12,7 +12,7 @@ import { withFileLink } from "../utils/fileLink.js";
 
 export class CommentService {
   static async list(taskId: string, userId: string, role: UserRole) {
-    await TaskService.getById(taskId, userId, role);
+    await TaskService.access(taskId, userId, role);
 
     const comments = await prisma.taskComment.findMany({
       where: { taskId, deletedAt: null },
@@ -28,48 +28,44 @@ export class CommentService {
   }
 
   static async create(taskId: string, userId: string, role: UserRole, body: string, files: Express.Multer.File[] = []) {
-    const task = await TaskService.getById(taskId, userId, role);
-    await ProjectService.requireProjectRole(task.projectId, userId, role, "contributor"); // viewers read only
+    const task = await TaskService.access(taskId, userId, role);
+    ProjectService.checkRole(task.myRole, task.projectStatus, "contributor"); // viewers read only
 
     // 1. Files go to private storage first; the comment and its file rows are then saved together. If either
     //    step fails, the stored files are removed again (no orphan files, no comment pointing at missing ones)
-    const stored: string[] = [];
-    let commentRecord;
+    //    The files upload side by side (5 screenshots no longer wait for each other)
+    const uploads = await Promise.allSettled(files.map((f) => StorageService.uploadPrivateFile(f.buffer, f.originalname, f.mimetype)));
+    const stored = uploads.flatMap((u) => (u.status === "fulfilled" ? [u.value] : []));
+    let comment;
     try {
-      for (const f of files) stored.push(await StorageService.uploadPrivateFile(f.buffer, f.originalname, f.mimetype));
-      commentRecord = await prisma.taskComment.create({
+      const failed = uploads.find((u): u is PromiseRejectedResult => u.status === "rejected");
+      if (failed) throw failed.reason;
+      // 2. Saved and read back in one go: everything the notifications and the reply need comes with it
+      comment = await prisma.taskComment.create({
         data: {
           taskId, userId, body,
           attachments: { create: files.map((f, i) => ({ name: f.originalname, url: stored[i], fileType: f.mimetype, fileSize: f.size, projectId: task.projectId, taskId, userId })) }
+        },
+        include: {
+          user: { select: { id: true, fullName: true, avatarUrl: true } },
+          attachments: { orderBy: { createdAt: "asc" } },
+          task: {
+            include: {
+              assignees: { select: { id: true } },
+              watchers: { select: { id: true } }
+            }
+          }
         }
       });
     } catch (err) {
-      for (const ref of stored) await StorageService.deleteFile(ref);
+      await Promise.all(stored.map((ref) => StorageService.deleteFile(ref)));
       throw err;
     }
 
-    // 2. Fetch required data for notifications/activity in a separate, simple query
-    // We do this separately to avoid complex nested includes that can fail
-    const comment = await prisma.taskComment.findUnique({
-      where: { id: commentRecord.id },
-      include: {
-        user: { select: { id: true, fullName: true, avatarUrl: true } },
-        attachments: { orderBy: { createdAt: "asc" } },
-        task: {
-          include: {
-            assignees: { select: { id: true } },
-            watchers: { select: { id: true } }
-          }
-        }
-      }
-    });
-
-    if (!comment) throw new Error("Failed to retrieve created comment");
-
     // Side effects (Notifications, Activity) wrapped in try-catch
     try {
-      // Activity Log
-      await ActivityService.log({
+      // Activity Log and the mention look-up don't depend on each other: they go out together
+      const activity = ActivityService.log({
         action: "COMMENT_ADDED",
         entityType: "task",
         entityId: taskId,
@@ -84,7 +80,7 @@ export class CommentService {
 
       // Mentions logic
       // Only people who can open this task: company managers, project members and its assignees; never suspended
-      const allUsers = await prisma.user.findMany({
+      const [allUsers] = await Promise.all([prisma.user.findMany({
         select: { id: true, fullName: true },
         where: {
           deletedAt: null, pendingApproval: false, status: { not: "SUSPENDED" },
@@ -94,7 +90,7 @@ export class CommentService {
             { assignedTasks: { some: { id: taskId } } }
           ]
         }
-      });
+      }), activity]);
       // Sort users by length of fullName descending to avoid partial matches
       allUsers.sort((a, b) => b.fullName.length - a.fullName.length);
       
@@ -171,11 +167,11 @@ export class CommentService {
       throw new ApiError(404, "Comment not found");
     }
 
-    const task = await TaskService.getById(comment.task.id, userId, role);
+    const task = await TaskService.access(comment.task.id, userId, role);
 
     // Managers of this project can delete any comment (moderation); others only their own
-    await ProjectService.assertProjectOpen(task.projectId);
-    const isManager = (await ProjectService.projectRole(task.projectId, userId, role)) === "manager";
+    ProjectService.assertOpenStatus(task.projectStatus);
+    const isManager = task.myRole === "manager";
 
     if (!isManager && comment.userId !== userId) {
       throw new ApiError(403, "You do not have permission to delete this comment");
@@ -206,11 +202,11 @@ export class CommentService {
     // The text may go only if the comment still has files to show
     if (!body.trim() && !comment._count.attachments) throw new ApiError(400, "Comment cannot be empty");
 
-    const task = await TaskService.getById(comment.taskId, userId, role);
+    const task = await TaskService.access(comment.taskId, userId, role);
     if (comment.userId !== userId) {
       throw new ApiError(403, "You can only edit your own comments");
     }
-    await ProjectService.assertProjectOpen(task.projectId);
+    ProjectService.assertOpenStatus(task.projectStatus);
 
     const updated = await prisma.taskComment.update({
       where: { id: commentId },

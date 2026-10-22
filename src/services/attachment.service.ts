@@ -16,7 +16,7 @@ export class AttachmentService {
     role: UserRole;
   }) {
     if (input.taskId) {
-      await TaskService.getById(input.taskId, input.userId, input.role);
+      await TaskService.access(input.taskId, input.userId, input.role);
       return;
     }
 
@@ -33,7 +33,10 @@ export class AttachmentService {
   static async assertCanUpload(input: { projectId?: string; taskId?: string; userId: string; role: UserRole }) {
     let projectId = input.projectId;
     if (input.taskId) {
-      projectId = (await TaskService.getById(input.taskId, input.userId, input.role)).projectId;
+      // A task's file: its project, the person's role there and whether it's open all come with the task
+      const task = await TaskService.access(input.taskId, input.userId, input.role);
+      ProjectService.checkRole(task.myRole, task.projectStatus, "contributor");
+      return task.projectId;
     }
     if (!projectId) throw new ApiError(400, "Attachment must belong to a project or task");
     await ProjectService.requireProjectRole(projectId, input.userId, input.role, "contributor");

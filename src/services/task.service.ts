@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma/client.js";
 import { formatRule, nextOccurrence, normalizeRule, parseRule, upcoming, utcDate } from "../utils/repeatRule.js";
 import { KEEP_DAYS, pastKeep } from "./trash-cleanup.service.js";
@@ -35,6 +36,9 @@ type TaskFields = {
 const STATUS_LABEL: Record<string, string> = { TODO: "To Do", IN_PROGRESS: "In Progress", REVIEW: "Review", DONE: "Completed" };
 
 const userSummary = { select: { id: true, fullName: true, email: true, avatarUrl: true } };
+// A task's people in one fixed order everywhere (list, task page, board): by name. Before, the order was
+// whatever the database happened to return, so avatars could swap places between screens
+const byName = [{ fullName: "asc" as const }, { id: "asc" as const }];
 
 export class TaskService {
   // shortcut: the UI has no paging and reads one page, so the page is large; add paging to the UI past ~1000 tasks
@@ -53,23 +57,41 @@ export class TaskService {
       })
     };
 
-    const [total, data, memberships] = await Promise.all([
+    // Speed: letting Prisma join people, project and checklist onto ~1000 tasks cost ~4x the plain read
+    // (it builds an object per task-person pair). The same facts come as lean side-by-side queries in the
+    // SAME database trip and are put together here. The extra queries read a little more than needed
+    // (every live task's people and checklist counts); only the listed tasks' parts are used.
+    const [total, rows, memberships, people, projects, checklist] = await Promise.all([
       prisma.task.count({ where }),
       prisma.task.findMany({
         where,
         orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
         take: limit,
-        skip,
-        include: {
-          assignees: userSummary,
-          project: {
-            select: { id: true, name: true, slug: true, status: true }
-          },
-          subtasks: { select: { done: true } }
-        }
+        skip
       }),
-      isManager ? Promise.resolve([]) : prisma.projectMember.findMany({ where: { userId, removedAt: null }, select: { projectId: true, role: true } })
+      isManager ? Promise.resolve([]) : prisma.projectMember.findMany({ where: { userId, removedAt: null }, select: { projectId: true, role: true } }),
+      prisma.$queryRaw<{ taskId: string; id: string; fullName: string; email: string; avatarUrl: string | null }[]>`
+        SELECT ta."A" AS "taskId", u."id", u."fullName", u."email", u."avatarUrl"
+        FROM "_TaskAssignees" ta
+        JOIN "User" u ON u."id" = ta."B"
+        JOIN "Task" t ON t."id" = ta."A"
+        WHERE t."deletedAt" IS NULL ${projectId ? Prisma.sql`AND t."projectId" = ${projectId}` : Prisma.empty}
+        ORDER BY ta."A", u."fullName", u."id" -- by name, like the task page and the board
+      `,
+      prisma.project.findMany({ where: projectId ? { id: projectId } : {}, select: { id: true, name: true, slug: true, status: true } }),
+      prisma.subtask.groupBy({ by: ["taskId", "done"], where: { task: { deletedAt: null, ...(projectId ? { projectId } : {}) } }, _count: { _all: true } })
     ]);
+    const peopleOf = new Map<string, { id: string; fullName: string; email: string; avatarUrl: string | null }[]>();
+    for (const { taskId, ...person } of people) (peopleOf.get(taskId) ?? peopleOf.set(taskId, []).get(taskId)!).push(person);
+    const projectById = new Map(projects.map((p) => [p.id, p]));
+    const steps = new Map<string, { total: number; done: number }>();
+    for (const g of checklist) {
+      const s = steps.get(g.taskId) ?? { total: 0, done: 0 };
+      s.total += g._count._all;
+      if (g.done) s.done += g._count._all;
+      steps.set(g.taskId, s);
+    }
+    const data = rows.map((t) => ({ ...t, assignees: peopleOf.get(t.id) ?? [], project: projectById.get(t.projectId)! }));
 
     // Same rule as ProjectService.projectRole, computed once for the whole list
     const memberRole = new Map(memberships.map((m) => [m.projectId, m.role]));
@@ -80,11 +102,11 @@ export class TaskService {
     };
 
     return {
-      data: data.map(({ subtasks, ...t }) => ({
+      data: data.map((t) => ({
         ...t,
         myRole: roleFor(t.projectId),
-        subtaskTotal: subtasks.length,
-        subtaskDone: subtasks.filter((s) => s.done).length
+        subtaskTotal: steps.get(t.id)?.total ?? 0,
+        subtaskDone: steps.get(t.id)?.done ?? 0
       })),
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) }
     };
@@ -105,11 +127,12 @@ export class TaskService {
       },
       include: {
         _count: { select: { attachments: true } },
-        assignees: userSummary,
-        watchers: userSummary,
+        assignees: { ...userSummary, orderBy: byName },
+        watchers: { ...userSummary, orderBy: byName },
         createdBy: { select: { id: true, fullName: true } },
         project: {
-          select: { id: true, name: true, slug: true, status: true }
+          // deletedAt and this person's membership are read here so the role needs no second trip (removed below)
+          select: { id: true, name: true, slug: true, status: true, deletedAt: true, members: userId ? { where: { userId, removedAt: null }, select: { role: true } } : false }
         },
         subtasks: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
         blockedBy: { where: { deletedAt: null }, select: { id: true, title: true, status: true } },
@@ -135,9 +158,39 @@ export class TaskService {
       throw new ApiError(404, "Task not found");
     }
 
-    const myRole = userId && role ? await ProjectService.projectRole(task.projectId, userId, role) : null;
+    // Same rule as ProjectService.projectRole: anyone who got past the filter above is a member or an assignee
+    const { deletedAt: projectDeletedAt, members, ...project } = task.project as typeof task.project & { members?: { role: string }[] };
+    const myRole = userId && role && !projectDeletedAt
+      ? ProjectService.roleFrom(role, members?.[0]?.role, task.assignees.some((a) => a.id === userId))
+      : null;
     const comments = task.comments.map((c) => ({ ...c, attachments: c.attachments.map(withFileLink) }));
-    return { ...task, comments, myRole };
+    return { ...task, project, comments, myRole };
+  }
+
+  // The light version of getById for changes that only need to know "may this person do it": the same
+  // visibility rule and "Task not found", the person's role and the project's status, in one trip
+  static async access(taskId: string, userId: string, role: UserRole) {
+    const isManager = ProjectService.isManagerRole(role);
+    const task = await prisma.task.findFirst({
+      where: {
+        id: taskId,
+        deletedAt: null,
+        ...(isManager ? {} : {
+          OR: [
+            { assignees: { some: { id: userId } } },
+            { project: { members: { some: { userId, removedAt: null } } } }
+          ]
+        })
+      },
+      select: {
+        id: true, title: true, status: true, projectId: true,
+        project: { select: { status: true, deletedAt: true, members: { where: { userId, removedAt: null }, select: { role: true } } } },
+        assignees: { where: { id: userId }, select: { id: true } }
+      }
+    });
+    if (!task) throw new ApiError(404, "Task not found");
+    const myRole = task.project.deletedAt ? null : ProjectService.roleFrom(role, task.project.members[0]?.role, task.assignees.length > 0);
+    return { id: task.id, title: task.title, status: task.status, projectId: task.projectId, projectStatus: task.project.status, myRole };
   }
 
   // Blockers must belong to the task's own project; a task can't block itself
@@ -163,11 +216,17 @@ export class TaskService {
 
   static async create(actorUserId: string, actorRole: UserRole, input: TaskFields & { title: string; projectId: string }) {
     // A task in a missing or archived project would be invisible everywhere
-    const project = await prisma.project.findFirst({ where: { id: input.projectId, deletedAt: null }, select: { id: true } });
-    if (!project) throw new ApiError(400, "Selected project does not exist");
-    await ProjectService.requireProjectRole(input.projectId, actorUserId, actorRole, "manager");
-    await ProjectService.assertActiveUsers(input.assigneeIds ?? []);
-    await this.assertLinksInProject(input.projectId, input);
+    // The four checks don't depend on each other, so they run side by side; the first failing one, in this
+    // order, is still the one reported (same answers as when they ran one after another)
+    const checks = await Promise.allSettled([
+      prisma.project.findFirst({ where: { id: input.projectId, deletedAt: null }, select: { id: true } })
+        .then((project) => { if (!project) throw new ApiError(400, "Selected project does not exist"); }),
+      ProjectService.requireProjectRole(input.projectId, actorUserId, actorRole, "manager"),
+      ProjectService.assertActiveUsers(input.assigneeIds ?? []),
+      this.assertLinksInProject(input.projectId, input)
+    ]);
+    const failed = checks.find((c): c is PromiseRejectedResult => c.status === "rejected");
+    if (failed) throw failed.reason;
     this.assertDateOrder(input.startDate ? new Date(input.startDate) : null, input.dueDate ? new Date(input.dueDate) : null);
 
     const task = await prisma.task.create({
@@ -194,23 +253,27 @@ export class TaskService {
       }
     });
 
-    await ActivityService.log({
-      action: "TASK_CREATED",
-      entityType: "task",
-      entityId: task.id,
-      description: `Created task ${task.title}`,
-      userId: actorUserId,
-      projectId: task.projectId,
-      taskId: task.id
-    });
-
-    await this.announceNewTask(task, input.assigneeIds ?? []);
-    return this.getById(task.id);
+    // Log, notifications and reading the task back don't depend on each other: all at once
+    const [, , fresh] = await Promise.all([
+      ActivityService.log({
+        action: "TASK_CREATED",
+        entityType: "task",
+        entityId: task.id,
+        description: `Created task ${task.title}`,
+        userId: actorUserId,
+        projectId: task.projectId,
+        taskId: task.id
+      }),
+      this.announceNewTask(task, input.assigneeIds ?? []),
+      this.getById(task.id)
+    ]);
+    return fresh;
   }
 
   // A repeating task's next copy is announced in the bell only: a daily task would otherwise email every day
   static async announceNewTask(task: { id: string; title: string; projectId: string; status: string }, assigneeIds: string[], opts: { repeatDue?: Date } = {}) {
-    for (const assigneeId of assigneeIds) {
+    // Each person's notice is independent of the others, so they're written side by side
+    await Promise.all(assigneeIds.map(async (assigneeId) => {
       await NotificationService.create({
         userId: assigneeId,
         type: "TASK_ASSIGNED",
@@ -223,7 +286,7 @@ export class TaskService {
         email: !opts.repeatDue
       });
       socketService.emitToUser(assigneeId, "task_assigned", { taskId: task.id, title: task.title, projectId: task.projectId });
-    }
+    }));
 
     // Emit Real-Time Event for Project Room
     socketService.emitToProject(task.projectId, "task_created", {
@@ -239,7 +302,7 @@ export class TaskService {
 
   static async update(taskId: string, actorUserId: string, userRole: string, input: TaskFields) {
     const existingTask = await this.getById(taskId, actorUserId, userRole as UserRole);
-    const myRole = await ProjectService.requireProjectRole(existingTask.projectId, actorUserId, userRole as UserRole, "contributor");
+    const myRole = ProjectService.checkRole(existingTask.myRole, existingTask.project.status, "contributor");
     const isManager = myRole === "manager";
 
     if (!isManager) {
@@ -481,7 +544,7 @@ export class TaskService {
 
   static async remove(taskId: string, actorUserId: string, actorRole: UserRole) {
     const task = await this.getById(taskId, actorUserId, actorRole);
-    await ProjectService.requireProjectRole(task.projectId, actorUserId, actorRole, "manager");
+    ProjectService.checkRole(task.myRole, task.project.status, "manager");
 
     await prisma.task.update({
       where: { id: taskId },
@@ -550,7 +613,7 @@ export class TaskService {
   }
 
   static async setWatching(taskId: string, watch: boolean, userId: string, role: UserRole) {
-    await this.getById(taskId, userId, role); // anyone who can see the task may follow it
+    await this.access(taskId, userId, role); // anyone who can see the task may follow it
     await prisma.task.update({
       where: { id: taskId },
       data: { watchers: watch ? { connect: { id: userId } } : { disconnect: { id: userId } } }

@@ -7,8 +7,8 @@ import { TaskService } from "./task.service.js";
 // Hours spent on a task. Contributors log their own time; only project managers remove someone else's entry.
 export class TimeEntryService {
   static async log(taskId: string, input: { minutes: number; note?: string; spentOn?: string }, userId: string, role: UserRole) {
-    const task = await TaskService.getById(taskId, userId, role);
-    await ProjectService.requireProjectRole(task.projectId, userId, role, "contributor");
+    const task = await TaskService.access(taskId, userId, role);
+    ProjectService.checkRole(task.myRole, task.projectStatus, "contributor");
     if (input.spentOn && new Date(input.spentOn) > new Date(Date.now() + 24 * 3600 * 1000)) {
       throw new ApiError(400, "Time can't be logged for a future date");
     }
@@ -21,8 +21,8 @@ export class TimeEntryService {
   static async remove(entryId: string, userId: string, role: UserRole) {
     const entry = await prisma.timeEntry.findUnique({ where: { id: entryId }, select: { userId: true, taskId: true } });
     if (!entry) throw new ApiError(404, "Time entry not found");
-    const task = await TaskService.getById(entry.taskId, userId, role);
-    const myRole = await ProjectService.requireProjectRole(task.projectId, userId, role, "contributor");
+    const task = await TaskService.access(entry.taskId, userId, role);
+    const myRole = ProjectService.checkRole(task.myRole, task.projectStatus, "contributor");
     if (entry.userId !== userId && myRole !== "manager") {
       throw new ApiError(403, "You can only remove your own time entries");
     }

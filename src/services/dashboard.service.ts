@@ -20,25 +20,16 @@ export class DashboardService {
       ]
     };
 
+    // Projects and tasks are each counted once, grouped by status (was seven separate counts)
     const [
-      activeProjectsCount,
-      totalProjectsCount,
-      pendingProjectsCount,
-      completedProjectsCount,
-      pendingTasksCount,
-      completedTasksCount,
-      totalTasksCount,
+      projectsByStatus,
+      tasksByStatus,
       overdueTasksCount,
       recentTasks,
       upcomingDeadlines
     ] = await Promise.all([
-      prisma.project.count({ where: { status: PROJECT_STATUS.ACTIVE, ...projectWhere } }),
-      prisma.project.count({ where: projectWhere }),
-      prisma.project.count({ where: { status: { in: [PROJECT_STATUS.PLANNING, PROJECT_STATUS.ON_HOLD] }, ...projectWhere } }),
-      prisma.project.count({ where: { status: PROJECT_STATUS.COMPLETED, ...projectWhere } }),
-      prisma.task.count({ where: { status: { not: TASK_STATUS.DONE }, ...taskWhere } }),
-      prisma.task.count({ where: { status: TASK_STATUS.DONE, ...taskWhere } }),
-      prisma.task.count({ where: taskWhere }),
+      prisma.project.groupBy({ by: ["status"], where: projectWhere, _count: { _all: true } }),
+      prisma.task.groupBy({ by: ["status"], where: taskWhere, _count: { _all: true } }),
       prisma.task.count({
         where: {
           status: { not: TASK_STATUS.DONE },
@@ -68,6 +59,16 @@ export class DashboardService {
         }
       })
     ]);
+
+    const projects = (statuses?: string[]) => projectsByStatus.filter((g) => !statuses || statuses.includes(g.status)).reduce((n, g) => n + g._count._all, 0);
+    const tasks = (keep: (status: string) => boolean) => tasksByStatus.filter((g) => keep(g.status)).reduce((n, g) => n + g._count._all, 0);
+    const activeProjectsCount = projects([PROJECT_STATUS.ACTIVE]);
+    const totalProjectsCount = projects();
+    const pendingProjectsCount = projects([PROJECT_STATUS.PLANNING, PROJECT_STATUS.ON_HOLD]);
+    const completedProjectsCount = projects([PROJECT_STATUS.COMPLETED]);
+    const pendingTasksCount = tasks((s) => s !== TASK_STATUS.DONE);
+    const completedTasksCount = tasks((s) => s === TASK_STATUS.DONE);
+    const totalTasksCount = tasks(() => true);
 
     return {
       stats: {

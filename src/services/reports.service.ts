@@ -71,10 +71,6 @@ export class ReportsService {
       overdueTasksDb,
       allRelevantTasks,
       recentActivity,
-      activeProjectCount,
-      totalCompletedTasks,
-      totalPendingTasks,
-      totalOverdueTasks,
       overdueByProject
     ] = await Promise.all([
       prisma.task.findMany({
@@ -94,8 +90,9 @@ export class ReportsService {
       }),
       prisma.project.findMany({
         where: { ...projectBaseWhere, status: PROJECT_STATUS.ACTIVE },
-        include: {
-          tasks: { where: taskBaseWhere, include: { timeEntries: { select: { minutes: true } } } }
+        select: {
+          id: true, name: true, startDate: true, dueDate: true,
+          tasks: { where: taskBaseWhere, select: { status: true, dueDate: true, estimateHours: true, timeEntries: { select: { minutes: true } } } }
         }
       }),
       prisma.task.findMany({
@@ -104,17 +101,19 @@ export class ReportsService {
           status: { not: TASK_STATUS.DONE },
           dueDate: { lt: startOfToday() }
         },
-        include: {
-          assignees: { select: { fullName: true, avatarUrl: true } },
+        select: {
+          id: true, title: true, dueDate: true, priority: true,
+          assignees: { select: { fullName: true, avatarUrl: true }, orderBy: [{ fullName: "asc" }, { id: "asc" }] },
           project: { select: { id: true, name: true } }
         },
-        orderBy: { dueDate: 'asc' },
+        orderBy: [{ dueDate: 'asc' }, { title: 'asc' }, { id: 'asc' }],
         take: 10
       }),
       prisma.task.findMany({
         where: taskBaseWhere,
-        include: {
-          assignees: { select: { id: true, fullName: true, avatarUrl: true } }
+        select: {
+          status: true, dueDate: true,
+          assignees: { select: { id: true, fullName: true, avatarUrl: true }, orderBy: [{ fullName: "asc" }, { id: "asc" }] }
         }
       }),
       prisma.activityLog.findMany({
@@ -125,12 +124,6 @@ export class ReportsService {
         orderBy: { createdAt: 'desc' },
         take: 10
       }),
-      prisma.project.count({ where: { ...projectBaseWhere, status: PROJECT_STATUS.ACTIVE } }),
-      prisma.task.count({ where: { ...taskBaseWhere, status: TASK_STATUS.DONE } }),
-      prisma.task.count({ where: { ...taskBaseWhere, status: { not: TASK_STATUS.DONE } } }),
-      prisma.task.count({
-        where: { ...taskBaseWhere, ...NOT_IN_PAUSED_PROJECT, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } }
-      }),
       prisma.task.groupBy({
         by: ["projectId"],
         where: { ...taskBaseWhere, ...NOT_IN_PAUSED_PROJECT, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } },
@@ -138,6 +131,11 @@ export class ReportsService {
       })
     ]);
 
+    // Four totals that used to be separate queries, worked out from what is already here (same filters)
+    const activeProjectCount = activeProjects.length;
+    const totalCompletedTasks = statusCounts.filter((g) => g.status === TASK_STATUS.DONE).reduce((n, g) => n + g._count, 0);
+    const totalPendingTasks = statusCounts.filter((g) => g.status !== TASK_STATUS.DONE).reduce((n, g) => n + g._count, 0);
+    const totalOverdueTasks = overdueByProject.reduce((n, g) => n + g._count, 0);
 
     const trends = days.map((day) => {
       let created = 0;
@@ -249,14 +247,16 @@ export class ReportsService {
       }
     }
     
-    const teamPerformance = Array.from(userStatsMap.values()).sort((a, b) => b.completed - a.completed).slice(0, 10);
+    // Ties are broken by name, so who makes the top 10 doesn't depend on the order tasks happened to load in
+    const byName = (a: { user: { fullName: string } }, b: { user: { fullName: string } }) => a.user.fullName.localeCompare(b.user.fullName);
+    const teamPerformance = Array.from(userStatsMap.values()).sort((a, b) => b.completed - a.completed || byName(a, b)).slice(0, 10);
     const workloadDistribution = Array.from(userStatsMap.values()).map(u => ({
       id: u.user.id,
       name: u.user.fullName,
       avatarUrl: u.user.avatarUrl,
       taskCount: u.total - u.completed,
       overdue: u.overdue
-    })).sort((a, b) => b.taskCount - a.taskCount);
+    })).sort((a, b) => b.taskCount - a.taskCount || a.name.localeCompare(b.name));
 
     // 6. Recent Activity
 

@@ -8,8 +8,8 @@ import { socketService } from "./socket.service.js";
 // Checklist items inside a task. Anyone who may move the task's status (contributor or above) may edit them.
 export class SubtaskService {
   static async assertCanEdit(taskId: string, userId: string, role: UserRole) {
-    const task = await TaskService.getById(taskId, userId, role);
-    await ProjectService.requireProjectRole(task.projectId, userId, role, "contributor");
+    const task = await TaskService.access(taskId, userId, role);
+    ProjectService.checkRole(task.myRole, task.projectStatus, "contributor");
     return task;
   }
 

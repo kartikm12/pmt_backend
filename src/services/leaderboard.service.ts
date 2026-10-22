@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma/client.js";
 import { TASK_STATUS, TASK_PRIORITY, PROJECT_STATUS } from "../constants/enums.js";
 import { subDays, addDays, startOfDay, startOfToday, isBefore, isAfter } from "date-fns";
@@ -57,46 +58,36 @@ export class LeaderboardService {
         fullName: true,
         avatarUrl: true,
         title: true,
-        role: true,
-        assignedTasks: {
-          where: {
-            ...taskWhere,
-            OR: [
-              { createdAt: { gte: startDate } },
-              { completedAt: { gte: startDate } },
-              { status: { not: TASK_STATUS.DONE } }
-            ]
-          },
-          select: {
-            id: true,
-            status: true,
-            priority: true,
-            dueDate: true,
-            completedAt: true,
-            createdAt: true,
-            project: { select: { status: true } }
-          }
-        },
-        managedProjects: {
-          where: {
-            ...projectWhere,
-            OR: [
-              { createdAt: { gte: startDate } },
-              { completedAt: { gte: startDate } },
-              { status: { not: PROJECT_STATUS.COMPLETED } }
-            ]
-          },
-          select: {
-            id: true,
-            status: true,
-            dueDate: true,
-            completedAt: true
-          }
-        }
+        role: true
       }
     });
 
-    const leaderboard = users.map(user => {
+    // Speed: each person's tasks and projects used to be nested into this query, and building those nested
+    // objects was most of the time. The same rows now come as flat lists in the same trip and are matched up here.
+    const taskWindow = { ...taskWhere, OR: [{ createdAt: { gte: startDate } }, { completedAt: { gte: startDate } }, { status: { not: TASK_STATUS.DONE } }] };
+    const [tasks, links, projectStatuses, managed] = await Promise.all([
+      prisma.task.findMany({ where: taskWindow, select: { id: true, status: true, priority: true, dueDate: true, completedAt: true, createdAt: true, projectId: true } }),
+      prisma.$queryRaw<{ taskId: string; userId: string }[]>`
+        SELECT ta."A" AS "taskId", ta."B" AS "userId" FROM "_TaskAssignees" ta JOIN "Task" t ON t."id" = ta."A"
+        WHERE t."deletedAt" IS NULL ${filters.projectId ? Prisma.sql`AND t."projectId" = ${filters.projectId}` : Prisma.empty}`,
+      prisma.project.findMany({ where: filters.projectId ? { id: filters.projectId } : {}, select: { id: true, status: true } }),
+      prisma.project.findMany({
+        where: { ...projectWhere, OR: [{ createdAt: { gte: startDate } }, { completedAt: { gte: startDate } }, { status: { not: PROJECT_STATUS.COMPLETED } }] },
+        select: { id: true, status: true, dueDate: true, completedAt: true, managerId: true }
+      })
+    ]);
+    const statusOf = new Map(projectStatuses.map((p) => [p.id, p.status]));
+    const taskById = new Map(tasks.map((t) => [t.id, { ...t, project: { status: statusOf.get(t.projectId)! } }]));
+    const tasksOf = new Map<string, (typeof tasks[number] & { project: { status: string } })[]>();
+    for (const l of links) {
+      const t = taskById.get(l.taskId);
+      if (t) (tasksOf.get(l.userId) ?? tasksOf.set(l.userId, []).get(l.userId)!).push(t);
+    }
+    const projectsOf = new Map<string, typeof managed>();
+    for (const p of managed) (projectsOf.get(p.managerId) ?? projectsOf.set(p.managerId, []).get(p.managerId)!).push(p);
+
+    const leaderboard = users.map(person => {
+      const user = { ...person, assignedTasks: tasksOf.get(person.id) ?? [], managedProjects: projectsOf.get(person.id) ?? [] };
       let score = 0;
       let completedTasks = 0;
       let inProgressTasks = 0;
@@ -194,8 +185,9 @@ export class LeaderboardService {
       };
     });
 
+    // Equal scores are ordered by name, so ranks don't depend on the order people happened to load in
     const sortedLeaderboard = leaderboard
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => b.score - a.score || a.fullName.localeCompare(b.fullName))
       .map((entry, index) => {
         const entryWithRank = { ...entry, rank: index + 1 };
         if (entryWithRank.rank === 1 && entryWithRank.score > 0) {

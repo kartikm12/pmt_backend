@@ -29,28 +29,34 @@ export class TeamService {
             }
           }
         },
-        assignedTasks: {
-          where: { deletedAt: null, project: { deletedAt: null } },
-          select: {
-            project: {
-              select: { id: true, name: true, slug: true, status: true }
-            }
-          }
-        },
         _count: {
           select: { assignedTasks: true }
         }
       }
     });
 
+    // Projects someone works in only through tasks: every task row of every person used to be loaded just
+    // to find these; one lean query (same trip) now lists each person-project pair once
+    const [taskProjects, liveProjects] = await Promise.all([
+      prisma.$queryRaw<{ userId: string; projectId: string }[]>`
+        SELECT DISTINCT ta."B" AS "userId", t."projectId"
+        FROM "_TaskAssignees" ta
+        JOIN "Task" t ON t."id" = ta."A"
+        JOIN "Project" p ON p."id" = t."projectId"
+        WHERE t."deletedAt" IS NULL AND p."deletedAt" IS NULL`,
+      prisma.project.findMany({ where: { deletedAt: null }, select: { id: true, name: true, slug: true, status: true } })
+    ]);
+    const projectById = new Map(liveProjects.map((p) => [p.id, p]));
+    const viaTasks = new Map<string, string[]>();
+    for (const r of taskProjects) (viaTasks.get(r.userId) ?? viaTasks.set(r.userId, []).get(r.userId)!).push(r.projectId);
+
     return users.map(user => {
       const projectMap = new Map();
       user.memberships.forEach(m => projectMap.set(m.project.id, m.project));
-      user.assignedTasks.forEach(t => projectMap.set(t.project.id, t.project));
-      
+      for (const pid of viaTasks.get(user.id) ?? []) if (!projectMap.has(pid) && projectById.has(pid)) projectMap.set(pid, projectById.get(pid));
+
       const mergedMemberships = Array.from(projectMap.values()).map(p => ({ project: p }));
-      const { assignedTasks, ...rest } = user;
-      return { ...rest, memberships: mergedMemberships };
+      return { ...user, memberships: mergedMemberships };
     });
   }
 
