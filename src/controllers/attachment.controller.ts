@@ -54,6 +54,11 @@ export class AttachmentController {
     }
     const attachment = await AttachmentService.getById(req.params.id);
     if (!attachment) return res.status(404).type("text/plain").send("This file was deleted.");
+    // ?size=thumb: the small version of a picture (made on first request); anything else gets the original
+    if (req.query.size === "thumb" && attachment.fileType.startsWith("image/")) {
+      const thumb = await StorageService.openThumbUrl(attachment.url);
+      if (thumb) return res.redirect(302, thumb);
+    }
     return res.redirect(302, await StorageService.openUrl(attachment.url));
   }
 

@@ -188,8 +188,9 @@ export class LeaderboardService {
     // Equal scores are ordered by name, so ranks don't depend on the order people happened to load in
     const sortedLeaderboard = leaderboard
       .sort((a, b) => b.score - a.score || a.fullName.localeCompare(b.fullName))
-      .map((entry, index) => {
-        const entryWithRank = { ...entry, rank: index + 1 };
+      // Equal scores share a rank (1, 1, 3), so nobody is placed above someone with the same points
+      .map((entry, _index, all) => {
+        const entryWithRank = { ...entry, rank: 1 + all.filter((o) => o.score > entry.score).length };
         if (entryWithRank.rank === 1 && entryWithRank.score > 0) {
           entryWithRank.badges.push("Top Performer");
         }

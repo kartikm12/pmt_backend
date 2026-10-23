@@ -7,6 +7,9 @@ import path from 'path';
 // public "uploads" bucket because every page shows them. A private file is stored as "private:<path>".
 export const FILES_BUCKET = process.env.FILES_BUCKET || "pmt-files";
 const PRIVATE = "private:";
+// Thumbnails: at most this many pixels wide or tall (enough for an 80 px square on a 3x phone screen)
+const THUMB_SIZE = 240;
+const thumbPath = (filePath: string) => `thumbs/${filePath}.webp`;
 
 export class StorageService {
   static async uploadPrivateFile(fileBuffer: Buffer, originalName: string, mimeType: string) {
@@ -30,6 +33,35 @@ export class StorageService {
     }
     return data.signedUrl;
   }
+
+  // A small version of a picture for lists and comment thumbnails (a 48-80 px square doesn't need the full
+  // screenshot). Made once, on first request, and kept next to the original; null = use the original.
+  static async openThumbUrl(ref: string): Promise<string | null> {
+    if (!ref.startsWith(PRIVATE)) return null;
+    const original = ref.slice(PRIVATE.length);
+    const thumb = thumbPath(original);
+    const bucket = supabase.storage.from(FILES_BUCKET);
+    const existing = await bucket.createSignedUrl(thumb, 60);
+    if (!existing.error && existing.data?.signedUrl) return existing.data.signedUrl;
+    try {
+      const { data, error } = await bucket.download(original);
+      if (error || !data) return null;
+      const { default: sharp } = await import("sharp");
+      const small = await sharp(Buffer.from(await data.arrayBuffer()))
+        .rotate() // phone photos: respect the camera's orientation
+        .resize({ width: THUMB_SIZE, height: THUMB_SIZE, fit: "inside", withoutEnlargement: true })
+        .webp({ quality: 72 })
+        .toBuffer();
+      const saved = await bucket.upload(thumb, small, { contentType: "image/webp", upsert: true });
+      if (saved.error) return null;
+      const signed = await bucket.createSignedUrl(thumb, 60);
+      return signed.data?.signedUrl ?? null;
+    } catch (err) {
+      console.error(`Couldn't make a thumbnail for ${ref}:`, err);
+      return null;
+    }
+  }
+
   static async uploadFile(fileBuffer: Buffer, originalName: string, mimeType: string, folder: string = 'uploads') {
     const ext = path.extname(originalName);
     const fileName = `${folder}/${crypto.randomUUID()}${ext}`;
@@ -56,7 +88,8 @@ export class StorageService {
   static async deleteFile(fileUrl: string) {
     if (fileUrl.startsWith(PRIVATE)) {
       const filePath = fileUrl.slice(PRIVATE.length);
-      const { data, error } = await supabase.storage.from(FILES_BUCKET).remove([filePath]);
+      // Its thumbnail goes too, if one was made (a missing one is simply skipped)
+      const { data, error } = await supabase.storage.from(FILES_BUCKET).remove([filePath, thumbPath(filePath)]);
       if (error) console.error(`Failed to delete from Supabase (${FILES_BUCKET}): ${error.message}`);
       else if (!data?.length) console.error(`Supabase did not delete ${filePath} from ${FILES_BUCKET} (no permission? set SUPABASE_SERVICE_ROLE_KEY)`);
       return;
