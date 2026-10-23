@@ -10,6 +10,9 @@ const PRIVATE = "private:";
 // Thumbnails: at most this many pixels wide or tall (enough for an 80 px square on a 3x phone screen)
 const THUMB_SIZE = 240;
 const thumbPath = (filePath: string) => `thumbs/${filePath}.webp`;
+// A thumbnail's storage link lasts an hour so the browser can keep it (a 1.5 KB preview, unlike the original,
+// which still gets 60-second links); the app's own link stays signed and expiring as before
+export const THUMB_LINK_SECONDS = 3600;
 
 export class StorageService {
   static async uploadPrivateFile(fileBuffer: Buffer, originalName: string, mimeType: string) {
@@ -41,7 +44,7 @@ export class StorageService {
     const original = ref.slice(PRIVATE.length);
     const thumb = thumbPath(original);
     const bucket = supabase.storage.from(FILES_BUCKET);
-    const existing = await bucket.createSignedUrl(thumb, 60);
+    const existing = await bucket.createSignedUrl(thumb, THUMB_LINK_SECONDS);
     if (!existing.error && existing.data?.signedUrl) return existing.data.signedUrl;
     try {
       const { data, error } = await bucket.download(original);
@@ -52,9 +55,9 @@ export class StorageService {
         .resize({ width: THUMB_SIZE, height: THUMB_SIZE, fit: "inside", withoutEnlargement: true })
         .webp({ quality: 72 })
         .toBuffer();
-      const saved = await bucket.upload(thumb, small, { contentType: "image/webp", upsert: true });
+      const saved = await bucket.upload(thumb, small, { contentType: "image/webp", upsert: true, cacheControl: String(THUMB_LINK_SECONDS) });
       if (saved.error) return null;
-      const signed = await bucket.createSignedUrl(thumb, 60);
+      const signed = await bucket.createSignedUrl(thumb, THUMB_LINK_SECONDS);
       return signed.data?.signedUrl ?? null;
     } catch (err) {
       console.error(`Couldn't make a thumbnail for ${ref}:`, err);

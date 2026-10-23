@@ -57,7 +57,11 @@ export class AttachmentController {
     // ?size=thumb: the small version of a picture (made on first request); anything else gets the original
     if (req.query.size === "thumb" && attachment.fileType.startsWith("image/")) {
       const thumb = await StorageService.openThumbUrl(attachment.url);
-      if (thumb) return res.redirect(302, thumb);
+      if (thumb) {
+        // The browser may reuse this for 50 minutes: shorter than the storage link it points to (1 hour)
+        res.setHeader("Cache-Control", "private, max-age=3000");
+        return res.redirect(302, thumb);
+      }
     }
     return res.redirect(302, await StorageService.openUrl(attachment.url));
   }
