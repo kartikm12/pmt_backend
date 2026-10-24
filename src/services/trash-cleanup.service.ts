@@ -39,8 +39,11 @@ export class TrashCleanupService {
     return { projects: projectIds.length, tasks: taskIds.length, files: files.length };
   }
 
-  // First run a minute after start-up (so a restart never skips a day), then every 24 hours
+  // First run a minute after start-up (so a restart never skips a day), then every 24 hours.
+  // TRASH_CLEANUP=off turns the schedule off (local test servers only: trash-check runs the job itself, and a
+  // restart's automatic run would otherwise purge the data it is setting up). Unset everywhere else.
   static start() {
+    if (process.env.TRASH_CLEANUP === "off") return () => undefined;
     const tick = () => TrashCleanupService.run().catch((err) => console.error("Recently deleted clean-up failed:", err));
     const first = setTimeout(tick, 60_000);
     const timer = setInterval(tick, DAY_MS);

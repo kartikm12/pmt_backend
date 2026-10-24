@@ -169,11 +169,9 @@ export class CommentService {
 
     const task = await TaskService.access(comment.task.id, userId, role);
 
-    // Managers of this project can delete any comment (moderation); others only their own
+    // Your own comments only; an Admin may delete anyone's (moderation). Project managers no longer can.
     ProjectService.assertOpenStatus(task.projectStatus);
-    const isManager = task.myRole === "manager";
-
-    if (!isManager && comment.userId !== userId) {
+    if (comment.userId !== userId && role !== "ADMIN") {
       throw new ApiError(403, "You do not have permission to delete this comment");
     }
 
