@@ -17,6 +17,7 @@ import { NotificationService } from "./notification.service.js";
 import { KEEP_DAYS, pastKeep } from "./trash-cleanup.service.js";
 import { socketService } from "./socket.service.js";
 import { generateShortId } from "../utils/id.js";
+import { BoardService, type Stage } from "./board.service.js";
 
 export type ProjectRole = "viewer" | "contributor" | "manager";
 const ROLE_RANK: Record<ProjectRole, number> = { viewer: 0, contributor: 1, manager: 2 };
@@ -311,6 +312,7 @@ export class ProjectService {
     });
 
     const { tasks, members, manager, attachments, ...projectData } = project;
+    const columns = await BoardService.columnsOf(projectId);
 
     const tasksWithStatus = tasks.map(({ subtasks, ...task }: any) => ({
       ...task,
@@ -335,6 +337,8 @@ export class ProjectService {
         attachments: (attachments || []).map(withFileLink),
         myRole
       },
+      // The board's columns in order (each counts as one of the four stages)
+      columns,
       tasks: tasksWithStatus,
       users: Array.from(usersMap.values())
     };
@@ -381,6 +385,9 @@ export class ProjectService {
         }
       }
     });
+
+    // Every new board starts with the four usual columns
+    await BoardService.createDefaults(project.id);
 
     if (input.copyFromProjectId) {
       await this.copyPlan(input.copyFromProjectId, project.id, project.startDate, input.managerId, userId);
@@ -845,5 +852,29 @@ export class ProjectService {
       projectId
     });
     return { success: true };
+  }
+
+  // ------------------------------------------------------------------ board columns
+  static async getColumns(projectId: string, userId: string, role: UserRole) {
+    await this.requireProjectRole(projectId, userId, role, "viewer", { closedOk: true });
+    return BoardService.columnsOf(projectId);
+  }
+
+  // Only this project's managers (and company managers/Admins) change the columns
+  static async saveColumns(projectId: string, input: { columns: { id?: string; name: string; stage: Stage }[]; moveTo: Record<string, string> }, userId: string, role: UserRole) {
+    await this.requireProjectRole(projectId, userId, role, "manager");
+    const result = await BoardService.saveColumns(projectId, input.columns, input.moveTo);
+    await ActivityService.log({
+      action: "PROJECT_UPDATED",
+      entityType: "project",
+      entityId: projectId,
+      description: `Changed the board columns to ${result.columns.map((c) => c.name).join(", ")}`,
+      userId,
+      projectId,
+      metadata: { columns: result.columns.map((c) => ({ name: c.name, stage: c.stage })), moved: result.moved }
+    });
+    socketService.emitToProject(projectId, "columns_updated", { projectId, columns: result.columns });
+    if (result.moved) socketService.emitToAll("task_activity_updated", { action: "UPDATED", projectId });
+    return result;
   }
 }

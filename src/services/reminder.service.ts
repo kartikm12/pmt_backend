@@ -3,6 +3,7 @@ import { TASK_STATUS } from "../constants/enums.js";
 import { prisma } from "../prisma/client.js";
 import { NotificationService } from "./notification.service.js";
 import { LIVE_PROJECT_STATUSES } from "../constants/enums.js";
+import { RuleService } from "../rules/rule.service.js";
 
 const DEFAULT_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -76,7 +77,11 @@ export class ReminderService {
 
   static start() {
     const interval = Number(process.env.REMINDER_INTERVAL_MS) || DEFAULT_INTERVAL_MS;
-    const tick = () => ReminderService.run().catch((err) => console.error("Reminder run failed:", err));
+    // The project rules "due tomorrow" and "N days overdue" run on the same clock
+    const tick = () => ReminderService.run()
+      .catch((err) => console.error("Reminder run failed:", err))
+      .then(() => RuleService.runTimeRules())
+      .catch((err) => console.error("Time rules failed:", err));
     const first = setTimeout(tick, 5000);
     const timer = setInterval(tick, interval);
     return () => {

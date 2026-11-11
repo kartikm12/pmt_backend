@@ -11,6 +11,9 @@ import {
   memberRoleSchema,
   updateProjectSchema
 } from "../validators/project.validator.js";
+import { columnsSchema } from "../rules/rule.validator.js";
+import { ruleRouter } from "../rules/rule.routes.js";
+import { ProjectService } from "../services/project.service.js";
 
 export const projectRouter = Router();
 
@@ -30,3 +33,12 @@ projectRouter.delete("/:projectId", asyncHandler(ProjectController.remove));
 projectRouter.post("/:projectId/members", validate(assignMembersSchema), asyncHandler(ProjectController.assignMembers));
 projectRouter.patch("/:projectId/members/:userId", validate(memberRoleSchema), asyncHandler(ProjectController.setMemberRole));
 projectRouter.delete("/:projectId/members/:userId", asyncHandler(ProjectController.removeMember));
+// The board's own columns: anyone on the project reads them; the service lets only its managers change them
+projectRouter.get("/:projectId/columns", asyncHandler(async (req, res) => {
+  res.json(await ProjectService.getColumns(req.params.projectId, req.user!.userId, req.user!.role as any));
+}));
+projectRouter.put("/:projectId/columns", validate(columnsSchema), asyncHandler(async (req, res) => {
+  res.json(await ProjectService.saveColumns(req.params.projectId, req.body, req.user!.userId, req.user!.role as any));
+}));
+// "When ... then ..." rules
+projectRouter.use("/:projectId/rules", ruleRouter);

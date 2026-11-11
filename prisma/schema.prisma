@@ -180,6 +180,9 @@ model Project {
   activityLogs  ActivityLog[]
   notifications Notification[]
   milestones    Milestone[]
+  // The board's own columns (each counts as one of the four stages) and its rules
+  columns       BoardColumn[]
+  rules         ProjectRule[]
 
   @@index([status, deletedAt])
   @@index([managerId, deletedAt])
@@ -225,6 +228,9 @@ model Task {
   recurrence       String?
   nextOccurrenceId String?
   milestoneId   String?
+  // The board column it sits in; status stays the stage that column counts as. null = the first column
+  // of its stage (tasks saved before columns existed, or by an older app that only sends a status)
+  columnId      String?
   projectId     String
   createdById   String
   createdAt     DateTime     @default(now())
@@ -232,6 +238,8 @@ model Task {
   deletedAt     DateTime?
   project       Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   milestone     Milestone?   @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  column        BoardColumn? @relation(fields: [columnId], references: [id], onDelete: SetNull)
+  ruleRuns      RuleRun[]
   assignees     User[]       @relation("TaskAssignees")
   watchers      User[]       @relation("TaskWatchers")
   blockedBy     Task[]       @relation("TaskDependencies")
@@ -370,4 +378,56 @@ model Attachment {
   @@index([taskId, createdAt])
   @@index([userId, createdAt])
   @@index([commentId])
+}
+
+// A project's board column. "stage" is which of the four fixed statuses it counts as, so reports, the
+// dashboard, the leaderboard and overdue alerts keep working whatever the columns are called.
+model BoardColumn {
+  id        String     @id @default(cuid())
+  projectId String
+  name      String
+  stage     TaskStatus
+  position  Int
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  project   Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks     Task[]
+
+  @@index([projectId, position])
+}
+
+// "When X happens (only if Y), then do Z" for one project. trigger/actions are plain strings and JSON
+// (not database enums) so new kinds can be added without a database type change.
+model ProjectRule {
+  id           String    @id @default(cuid())
+  projectId    String
+  enabled      Boolean   @default(true)
+  trigger      String
+  triggerValue String?
+  conditions   Json      @default("{}")
+  actions      Json      @default("[]")
+  runCount     Int       @default(0)
+  lastRunAt    DateTime?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  runs         RuleRun[]
+
+  @@index([projectId, trigger, enabled])
+}
+
+// One rule firing on one task. For the time-based triggers the unique key makes each fire once
+// (key = the due date it fired for, so a new due date can fire again).
+model RuleRun {
+  id        String      @id @default(cuid())
+  ruleId    String
+  taskId    String
+  key       String
+  createdAt DateTime    @default(now())
+  rule      ProjectRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  task      Task        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleId, taskId, key])
+  @@index([taskId])
 }

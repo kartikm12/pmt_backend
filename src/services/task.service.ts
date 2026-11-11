@@ -11,6 +11,8 @@ import { generateShortId } from "../utils/id.js";
 import { ProjectService, type ProjectRole } from "./project.service.js";
 import { LIVE_PROJECT_STATUSES, type ProjectStatus } from "../constants/enums.js";
 import { withFileLink } from "../utils/fileLink.js";
+import { BoardService, type Column } from "./board.service.js";
+import { RuleService } from "../rules/rule.service.js";
 
 type Status = "TODO" | "IN_PROGRESS" | "REVIEW" | "DONE";
 type Priority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
@@ -20,6 +22,8 @@ type TaskFields = {
   description?: string;
   priority?: Priority;
   status?: Status;
+  // A board column of the task's project; wins over status (status becomes the stage it counts as)
+  columnId?: string | null;
   dueDate?: string | null;
   startDate?: string | null;
   projectId?: string;
@@ -61,7 +65,7 @@ export class TaskService {
     // (it builds an object per task-person pair). The same facts come as lean side-by-side queries in the
     // SAME database trip and are put together here. The extra queries read a little more than needed
     // (every live task's people and checklist counts); only the listed tasks' parts are used.
-    const [total, rows, memberships, people, projects, checklist] = await Promise.all([
+    const [total, rows, memberships, people, projects, checklist, boardColumns] = await Promise.all([
       prisma.task.count({ where }),
       prisma.task.findMany({
         where,
@@ -79,8 +83,18 @@ export class TaskService {
         ORDER BY ta."A", u."fullName", u."id" -- by name, like the task page and the board
       `,
       prisma.project.findMany({ where: projectId ? { id: projectId } : {}, select: { id: true, name: true, slug: true, status: true } }),
-      prisma.subtask.groupBy({ by: ["taskId", "done"], where: { task: { deletedAt: null, ...(projectId ? { projectId } : {}) } }, _count: { _all: true } })
+      prisma.subtask.groupBy({ by: ["taskId", "done"], where: { task: { deletedAt: null, ...(projectId ? { projectId } : {}) } }, _count: { _all: true } }),
+      prisma.boardColumn.findMany({ where: projectId ? { projectId } : {}, orderBy: [{ position: "asc" }, { createdAt: "asc" }], select: { id: true, projectId: true, name: true, stage: true, position: true } })
     ]);
+    // Each task's column (by name in lists); a project without columns yet shows the plain status
+    const columnsOf = new Map<string, Column[]>();
+    for (const c of boardColumns as Column[]) (columnsOf.get(c.projectId) ?? columnsOf.set(c.projectId, []).get(c.projectId)!).push(c);
+    const columnFor = (t: { projectId: string; columnId: string | null; status: string }) => {
+      const cols = columnsOf.get(t.projectId);
+      if (!cols?.length) return null;
+      const c = BoardService.effectiveColumn(cols, t);
+      return { id: c.id, name: c.name, stage: c.stage };
+    };
     const peopleOf = new Map<string, { id: string; fullName: string; email: string; avatarUrl: string | null }[]>();
     for (const { taskId, ...person } of people) (peopleOf.get(taskId) ?? peopleOf.set(taskId, []).get(taskId)!).push(person);
     const projectById = new Map(projects.map((p) => [p.id, p]));
@@ -105,6 +119,7 @@ export class TaskService {
       data: data.map((t) => ({
         ...t,
         myRole: roleFor(t.projectId),
+        column: columnFor(t),
         subtaskTotal: steps.get(t.id)?.total ?? 0,
         subtaskDone: steps.get(t.id)?.done ?? 0
       })),
@@ -132,7 +147,11 @@ export class TaskService {
         createdBy: { select: { id: true, fullName: true } },
         project: {
           // deletedAt and this person's membership are read here so the role needs no second trip (removed below)
-          select: { id: true, name: true, slug: true, status: true, deletedAt: true, members: userId ? { where: { userId, removedAt: null }, select: { role: true } } : false }
+          select: {
+            id: true, name: true, slug: true, status: true, deletedAt: true,
+            members: userId ? { where: { userId, removedAt: null }, select: { role: true } } : false,
+            columns: { orderBy: [{ position: "asc" }, { createdAt: "asc" }], select: { id: true, projectId: true, name: true, stage: true, position: true } }
+          }
         },
         subtasks: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
         blockedBy: { where: { deletedAt: null }, select: { id: true, title: true, status: true } },
@@ -159,12 +178,14 @@ export class TaskService {
     }
 
     // Same rule as ProjectService.projectRole: anyone who got past the filter above is a member or an assignee
-    const { deletedAt: projectDeletedAt, members, ...project } = task.project as typeof task.project & { members?: { role: string }[] };
+    const { deletedAt: projectDeletedAt, members, columns, ...project } = task.project as typeof task.project & { members?: { role: string }[] };
     const myRole = userId && role && !projectDeletedAt
       ? ProjectService.roleFrom(role, members?.[0]?.role, task.assignees.some((a) => a.id === userId))
       : null;
     const comments = task.comments.map((c) => ({ ...c, attachments: c.attachments.map(withFileLink) }));
-    return { ...task, project, comments, myRole };
+    // The board's columns (for the status picker) and the one this task sits in
+    const column = columns.length ? BoardService.effectiveColumn(columns as Column[], task) : null;
+    return { ...task, project, comments, myRole, columns, column };
   }
 
   // The light version of getById for changes that only need to know "may this person do it": the same
@@ -228,6 +249,8 @@ export class TaskService {
     const failed = checks.find((c): c is PromiseRejectedResult => c.status === "rejected");
     if (failed) throw failed.reason;
     this.assertDateOrder(input.startDate ? new Date(input.startDate) : null, input.dueDate ? new Date(input.dueDate) : null);
+    // Which column it starts in: the one asked for, else the first column of its status
+    const place = (await BoardService.placement(input.projectId, { columnId: input.columnId, status: input.status ?? TASK_STATUS.TODO }))!;
 
     const task = await prisma.task.create({
       data: {
@@ -235,7 +258,8 @@ export class TaskService {
         title: input.title,
         description: input.description,
         priority: input.priority,
-        status: input.status,
+        status: place.status,
+        columnId: place.columnId,
         dueDate: input.dueDate ? new Date(input.dueDate) : null,
         startDate: input.startDate ? new Date(input.startDate) : null,
         projectId: input.projectId,
@@ -248,10 +272,14 @@ export class TaskService {
         estimateHours: input.estimateHours ?? null,
         recurrence: input.recurrence ? normalizeRule(input.recurrence, input.dueDate ? new Date(input.dueDate) : null) : null,
         blockedBy: input.blockedByIds?.length ? { connect: input.blockedByIds.map((id) => ({ id })) } : undefined,
-        startedAt: input.status === TASK_STATUS.IN_PROGRESS ? new Date() : null,
-        completedAt: input.status === TASK_STATUS.DONE ? new Date() : null
+        startedAt: place.status === TASK_STATUS.IN_PROGRESS ? new Date() : null,
+        completedAt: place.status === TASK_STATUS.DONE ? new Date() : null
       }
     });
+
+    // The project's rules run on the saved task before it is read back, so the reply shows their changes
+    await RuleService.onEvent({ kind: "TASK_CREATED", projectId: task.projectId, taskId: task.id });
+    if (input.assigneeIds?.length) await RuleService.onEvent({ kind: "ASSIGNED", projectId: task.projectId, taskId: task.id, assignedIds: input.assigneeIds });
 
     // Log, notifications and reading the task back don't depend on each other: all at once
     const [, , fresh] = await Promise.all([
@@ -306,8 +334,8 @@ export class TaskService {
     const isManager = myRole === "manager";
 
     if (!isManager) {
-      // Contributors may only move the status
-      input = { status: input.status };
+      // Contributors may only move the card (its status or column)
+      input = { status: input.status, columnId: input.columnId };
     }
 
     const targetProjectId = input.projectId ?? existingTask.projectId;
@@ -318,6 +346,21 @@ export class TaskService {
       input.blockedByIds ??= [];
     }
     await this.assertLinksInProject(targetProjectId, input, taskId);
+
+    // Where the card goes. A column wins (status becomes its stage); a status alone keeps the current column
+    // if it's already that stage. Moving to another project lands in that board's column for the stage.
+    const oldColumnId = existingTask.column?.id ?? null;
+    let newColumnId: string | null | undefined;
+    if (moved) {
+      const place = (await BoardService.placement(targetProjectId, { columnId: input.columnId ?? undefined, status: (input.status ?? existingTask.status) as Status }))!;
+      input.status = place.status;
+      newColumnId = place.columnId;
+    } else if (input.columnId || input.status) {
+      const place = (await BoardService.placement(targetProjectId, { columnId: input.columnId ?? undefined, status: input.status }, { columnId: existingTask.columnId, status: existingTask.status }))!;
+      input.status = place.status;
+      newColumnId = place.columnId;
+    }
+    const columnChanged = newColumnId !== undefined && newColumnId !== oldColumnId;
     // People already on the task stay assignable even if suspended since; only new picks are checked
     if (input.assigneeIds) await ProjectService.assertActiveUsers(input.assigneeIds, existingTask.assignees.map((a) => a.id));
     if (input.addAssigneeIds?.length) {
@@ -346,6 +389,7 @@ export class TaskService {
         description: input.description,
         priority: input.priority,
         status: input.status,
+        columnId: newColumnId,
         dueDate: newDue,
         ...(dueChanged ? { dueSoonNotifiedAt: null, overdueNotifiedAt: null } : {}),
         startDate: input.startDate === undefined ? undefined : input.startDate ? new Date(input.startDate) : null,
@@ -364,9 +408,13 @@ export class TaskService {
       }
     });
 
-    const description = statusChanged
-      ? `Changed task status to ${STATUS_LABEL[input.status!] ?? input.status}`
-      : `Updated task ${updatedTask.title}`;
+    const columns = newColumnId ? await BoardService.columnsOf(updatedTask.projectId) : [];
+    const columnName = columns.find((c) => c.id === newColumnId)?.name;
+    const description = columnChanged && columnName && !moved
+      ? `Moved task to ${columnName}`
+      : statusChanged
+        ? `Changed task status to ${STATUS_LABEL[input.status!] ?? input.status}`
+        : `Updated task ${updatedTask.title}`;
 
     // After the save, the log entry and notifications don't depend on each other: they go out together
     // (each sequential database trip costs ~160 ms on the live hosting)
@@ -414,7 +462,7 @@ export class TaskService {
           userId: w.id,
           type: "SYSTEM",
           title: "Task updated",
-          message: `${actor?.fullName ?? "Someone"} moved '${updatedTask.title}' to ${STATUS_LABEL[updatedTask.status]}`,
+          message: `${actor?.fullName ?? "Someone"} moved '${updatedTask.title}' to ${columnName ?? STATUS_LABEL[updatedTask.status]}`,
           projectId: updatedTask.projectId,
           taskId
         })));
@@ -470,6 +518,11 @@ export class TaskService {
       sideEffects.push(this.spawnNextOccurrence(taskId, actorUserId));
     }
 
+    // The project's rules see the saved change; they run before the reply is read so it shows their work
+    if (columnChanged) await RuleService.onEvent({ kind: "MOVED_TO_COLUMN", projectId: updatedTask.projectId, taskId, columnId: newColumnId! });
+    const newlyAssigned = (input.assigneeIds ?? []).filter((id) => !existingTask.assignees.some((a) => a.id === id));
+    if (newlyAssigned.length) await RuleService.onEvent({ kind: "ASSIGNED", projectId: updatedTask.projectId, taskId, assignedIds: newlyAssigned });
+
     // The fresh copy for the reply doesn't need the side effects, so it loads alongside them
     const [fresh] = await Promise.all([this.getById(taskId, actorUserId, userRole as UserRole), ...sideEffects]);
     return fresh;
@@ -478,7 +531,7 @@ export class TaskService {
   // Repeating task finished: create the next one, once (nextOccurrenceId guards re-completing and two
   // "done" clicks at the same moment). The next deadline follows the rule from the current deadline but is
   // never in the past, so a late finish doesn't create an overdue copy. COUNT/UNTIL end the series.
-  static async spawnNextOccurrence(taskId: string, actorUserId: string) {
+  static async spawnNextOccurrence(taskId: string, actorUserId: string, opts: { fromRule?: boolean } = {}) {
     const t = await prisma.task.findUniqueOrThrow({
       where: { id: taskId },
       include: {
@@ -501,13 +554,15 @@ export class TaskService {
     if (claim.count === 0) return null;
     // A start date keeps the same lead time before the deadline
     const nextStart = t.startDate && t.dueDate ? new Date(nextDue.getTime() - (utcDate(t.dueDate).getTime() - utcDate(t.startDate).getTime())) : null;
+    const firstColumn = BoardService.columnForStage(await BoardService.columnsOf(t.projectId), "TODO");
     const next = await prisma.task.create({
       data: {
         id: nextId,
         title: t.title,
         description: t.description,
         priority: t.priority,
-        status: "TODO",
+        status: firstColumn.stage,
+        columnId: firstColumn.id,
         dueDate: nextDue,
         startDate: nextStart,
         projectId: t.projectId,
@@ -531,6 +586,11 @@ export class TaskService {
       taskId: next.id
     });
     await this.announceNewTask(next, t.assignees.map((a) => a.id), { repeatDue: nextDue });
+    // Rules see the new copy like any new task, unless a rule made it (a rule can't set off rules)
+    if (!opts.fromRule) {
+      await RuleService.onEvent({ kind: "TASK_CREATED", projectId: next.projectId, taskId: next.id });
+      if (t.assignees.length) await RuleService.onEvent({ kind: "ASSIGNED", projectId: next.projectId, taskId: next.id, assignedIds: t.assignees.map((a) => a.id) });
+    }
     return next;
   }
 
@@ -598,17 +658,22 @@ export class TaskService {
   }
 
   // Saved card order inside one board column; anyone who can move cards may reorder them
-  static async reorder(input: { projectId: string; status: Status; orderedIds: string[] }, actorUserId: string, actorRole: UserRole) {
+  // columnId: the board column (newer app); without it the column is the status's (older app)
+  static async reorder(input: { projectId: string; status: Status; columnId?: string; orderedIds: string[] }, actorUserId: string, actorRole: UserRole) {
     await ProjectService.requireProjectRole(input.projectId, actorUserId, actorRole, "contributor");
-    const tasks = await prisma.task.findMany({
-      where: { id: { in: input.orderedIds }, projectId: input.projectId, status: input.status, deletedAt: null },
-      select: { id: true }
+    const columns = input.columnId ? await BoardService.columnsOf(input.projectId) : [];
+    const col = input.columnId ? columns.find((c) => c.id === input.columnId) : undefined;
+    if (input.columnId && !col) throw new ApiError(400, "That column isn't on this project's board any more; refresh and try again");
+    const found = await prisma.task.findMany({
+      where: { id: { in: input.orderedIds }, projectId: input.projectId, status: col ? col.stage : input.status, deletedAt: null },
+      select: { id: true, columnId: true, status: true }
     });
+    const tasks = col ? found.filter((t) => BoardService.effectiveColumn(columns, t).id === col.id) : found;
     if (tasks.length !== new Set(input.orderedIds).size) {
       throw new ApiError(400, "Those cards aren't all in that column any more; refresh and try again");
     }
-    await prisma.$transaction(input.orderedIds.map((id, index) => prisma.task.update({ where: { id }, data: { sortOrder: index } })));
-    socketService.emitToProject(input.projectId, "tasks_reordered", { projectId: input.projectId, status: input.status, orderedIds: input.orderedIds });
+    await prisma.$transaction(input.orderedIds.map((id, index) => prisma.task.update({ where: { id }, data: { sortOrder: index, ...(col ? { columnId: col.id } : {}) } })));
+    socketService.emitToProject(input.projectId, "tasks_reordered", { projectId: input.projectId, status: col?.stage ?? input.status, columnId: col?.id, orderedIds: input.orderedIds });
     return { success: true };
   }
 
