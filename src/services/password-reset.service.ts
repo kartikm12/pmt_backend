@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "crypto";
-import bcrypt from "bcryptjs";
+import { hashPassword } from "../utils/passwordHash.js";
 import { env } from "../config/env.js";
 import { prisma } from "../prisma/client.js";
 import { ApiError } from "../utils/apiError.js";
@@ -43,7 +43,7 @@ export class PasswordResetService {
     const user = await prisma.user.findFirst({ where: { id: record.userId, deletedAt: null }, select: { id: true, fullName: true } });
     if (!user) throw new ApiError(400, "This reset link has expired or was already used. Ask for a new one.");
 
-    const passwordHash = await bcrypt.hash(newPassword, env.BCRYPT_ROUNDS);
+    const passwordHash = await hashPassword(newPassword, env.BCRYPT_ROUNDS);
     const now = new Date();
     // New password, link spent, and every signed-in device signed out (whoever had the old password)
     const active = await prisma.userSession.findMany({ where: { userId: user.id, isActive: true }, select: { id: true } });

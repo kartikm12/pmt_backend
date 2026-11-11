@@ -1,4 +1,4 @@
-import bcrypt from "bcryptjs";
+import { comparePassword, hashPassword } from "../utils/passwordHash.js";
 import { env } from "../config/env.js";
 import { prisma } from "../prisma/client.js";
 import { ApiError } from "../utils/apiError.js";
@@ -92,17 +92,17 @@ export class UserService {
       throw new ApiError(404, "User not found");
     }
 
-    const isCurrentPasswordValid = await bcrypt.compare(input.currentPassword, user.passwordHash);
+    const isCurrentPasswordValid = await comparePassword(input.currentPassword, user.passwordHash);
     if (!isCurrentPasswordValid) {
       throw new ApiError(400, "Current password is incorrect");
     }
 
-    const isSamePassword = await bcrypt.compare(input.newPassword, user.passwordHash);
+    const isSamePassword = await comparePassword(input.newPassword, user.passwordHash);
     if (isSamePassword) {
       throw new ApiError(400, "New password must be different from current password");
     }
 
-    const passwordHash = await bcrypt.hash(input.newPassword, env.BCRYPT_ROUNDS);
+    const passwordHash = await hashPassword(input.newPassword, env.BCRYPT_ROUNDS);
 
     await prisma.user.update({
       where: { id: userId },

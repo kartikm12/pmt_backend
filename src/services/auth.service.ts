@@ -1,4 +1,4 @@
-import bcrypt from "bcryptjs";
+import { comparePassword, hashPassword } from "../utils/passwordHash.js";
 import { env } from "../config/env.js";
 import { USER_ROLE, type UserRole } from "../constants/enums.js";
 import { prisma } from "../prisma/client.js";
@@ -34,7 +34,7 @@ export class AuthService {
       throw new ApiError(409, "An account with this email already exists");
     }
 
-    const passwordHash = await bcrypt.hash(input.password, env.BCRYPT_ROUNDS);
+    const passwordHash = await hashPassword(input.password, env.BCRYPT_ROUNDS);
     const data = {
       fullName: input.fullName,
       email: normalizedEmail,
@@ -112,7 +112,7 @@ export class AuthService {
       throw new ApiError(401, "Invalid email or password");
     }
 
-    const isPasswordValid = await bcrypt.compare(input.password, user.passwordHash);
+    const isPasswordValid = await comparePassword(input.password, user.passwordHash);
 
     if (!isPasswordValid) {
       throw new ApiError(401, "Invalid email or password");
