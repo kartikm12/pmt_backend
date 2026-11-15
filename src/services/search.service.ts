@@ -1,8 +1,9 @@
-import { startOfToday, startOfWeek } from "date-fns";
+import { startOfWeek } from "date-fns";
 import { prisma } from "../prisma/client.js";
 import type { UserRole } from "../constants/enums.js";
 import { ProjectService } from "./project.service.js";
 import { LIVE_PROJECT_STATUSES, type ProjectStatus } from "../constants/enums.js";
+import { isPastDueDay, startOfBusinessDay } from "../utils/businessDay.js";
 
 const LIMIT = 8;
 
@@ -49,7 +50,7 @@ export class SearchService {
 
   // Workload: open work per active person, with estimated hours and this week's logged hours
   static async workload() {
-    const today = startOfToday();
+    const today = startOfBusinessDay();
     const weekStart = startOfWeek(today, { weekStartsOn: 1 });
     const users = await prisma.user.findMany({
       where: { deletedAt: null, pendingApproval: false, status: { not: "SUSPENDED" } },
@@ -72,7 +73,7 @@ export class SearchService {
         title: u.title,
         avatarUrl: u.avatarUrl,
         openTasks: u.assignedTasks.length,
-        overdueTasks: u.assignedTasks.filter((t) => t.dueDate && t.dueDate < today && LIVE_PROJECT_STATUSES.includes(t.project.status as ProjectStatus)).length,
+        overdueTasks: u.assignedTasks.filter((t) => t.dueDate && isPastDueDay(t.dueDate) && LIVE_PROJECT_STATUSES.includes(t.project.status as ProjectStatus)).length,
         estimatedHours: Math.round(u.assignedTasks.reduce((s, t) => s + (t.estimateHours ?? 0), 0) * 10) / 10,
         loggedHoursThisWeek: Math.round((u.timeEntries.reduce((s, e) => s + e.minutes, 0) / 60) * 10) / 10
       }))

@@ -1,5 +1,4 @@
 import { Prisma } from "@prisma/client";
-import { addDays, startOfDay } from "date-fns";
 import { prisma } from "../prisma/client.js";
 import { ApiError } from "../utils/apiError.js";
 import { ActivityService } from "../services/activity.service.js";
@@ -9,6 +8,7 @@ import { BoardService, type Stage } from "../services/board.service.js";
 import { ProjectService } from "../services/project.service.js";
 import { LIVE_PROJECT_STATUSES, MEMBERSHIP_ROLE, type UserRole } from "../constants/enums.js";
 import { MAX_RULES_PER_PROJECT, type RuleInput } from "./rule.validator.js";
+import { dueAtLeastDaysAgo, dueWithinDays } from "../utils/businessDay.js";
 
 type Rule = Prisma.ProjectRuleGetPayload<object>;
 type Action = { type: string; value: string };
@@ -136,12 +136,11 @@ export class RuleService {
     const rules = await prisma.projectRule.findMany({
       where: { enabled: true, trigger: { in: ["DUE_TOMORROW", "OVERDUE"] }, project: { deletedAt: null, status: { in: LIVE_PROJECT_STATUSES } } }
     });
-    const today = startOfDay(now);
     let ran = 0;
     for (const rule of rules) {
       const due = rule.trigger === "DUE_TOMORROW"
-        ? { gte: addDays(today, 1), lt: addDays(today, 2) }
-        : { lt: addDays(today, -(Number(rule.triggerValue) - 1)) };
+        ? dueWithinDays(1, 2, now)
+        : dueAtLeastDaysAgo(Number(rule.triggerValue), now);
       const tasks = await prisma.task.findMany({
         where: { projectId: rule.projectId, deletedAt: null, status: { not: "DONE" }, dueDate: due },
         select: { id: true, dueDate: true },
