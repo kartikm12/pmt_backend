@@ -1,7 +1,7 @@
 import { prisma } from "../prisma/client.js";
 import { PROJECT_STATUS, TASK_STATUS, USER_ROLE, type UserRole } from "../constants/enums.js";
-import { startOfToday } from "date-fns";
 import { NOT_IN_PAUSED_PROJECT } from "../constants/enums.js";
+import { dueAtLeastDaysAgo, startOfBusinessDay } from "../utils/businessDay.js";
 
 export class DashboardService {
   static async getStats(userId: string, role: UserRole) {
@@ -33,7 +33,7 @@ export class DashboardService {
       prisma.task.count({
         where: {
           status: { not: TASK_STATUS.DONE },
-          dueDate: { lt: startOfToday() },
+          dueDate: dueAtLeastDaysAgo(1), // overdue in the company's time zone
           ...taskWhere,
           ...NOT_IN_PAUSED_PROJECT
         }
@@ -49,7 +49,7 @@ export class DashboardService {
       prisma.task.findMany({
         where: {
           status: { not: TASK_STATUS.DONE },
-          dueDate: { gte: startOfToday() },
+          dueDate: { gte: startOfBusinessDay() },
           ...taskWhere
         },
         orderBy: { dueDate: "asc" },

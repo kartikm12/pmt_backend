@@ -1,9 +1,9 @@
-import { addDays, format, isSameDay, startOfDay } from "date-fns";
 import { TASK_STATUS } from "../constants/enums.js";
 import { prisma } from "../prisma/client.js";
 import { NotificationService } from "./notification.service.js";
 import { LIVE_PROJECT_STATUSES } from "../constants/enums.js";
 import { RuleService } from "../rules/rule.service.js";
+import { businessDateString, dueAtLeastDaysAgo, dueDayString, dueWithinDays, formatDueDay } from "../utils/businessDay.js";
 
 const DEFAULT_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -11,7 +11,7 @@ const DEFAULT_INTERVAL_MS = 15 * 60 * 1000;
 // "Due soon" = due today or tomorrow; "overdue" = due before today (same rule as the UI's red titles).
 export class ReminderService {
   static async run(now = new Date()) {
-    const today = startOfDay(now);
+    // Days are the company's (utils/businessDay), not the server machine's
     // Paused, finished and cancelled projects don't send reminders
     const openTask = { deletedAt: null, status: { not: TASK_STATUS.DONE }, project: { deletedAt: null, status: { in: LIVE_PROJECT_STATUSES } } } as const;
     const select = {
@@ -27,11 +27,11 @@ export class ReminderService {
       task.assignees.length ? { ids: task.assignees.map((a) => a.id), orphan: false } : { ids: [task.project.managerId], orphan: true };
 
     const dueSoon = await prisma.task.findMany({
-      where: { ...openTask, dueSoonNotifiedAt: null, dueDate: { gte: today, lt: addDays(today, 2) } },
+      where: { ...openTask, dueSoonNotifiedAt: null, dueDate: dueWithinDays(0, 2, now) },
       select
     });
     const overdue = await prisma.task.findMany({
-      where: { ...openTask, overdueNotifiedAt: null, dueDate: { lt: today } },
+      where: { ...openTask, overdueNotifiedAt: null, dueDate: dueAtLeastDaysAgo(1, now) },
       select
     });
 
@@ -40,7 +40,7 @@ export class ReminderService {
       // Claim first so two server instances (or overlapping runs) never double-send
       const claim = await prisma.task.updateMany({ where: { id: task.id, dueSoonNotifiedAt: null }, data: { dueSoonNotifiedAt: now } });
       if (claim.count === 0) continue;
-      const when = isSameDay(task.dueDate!, now) ? "today" : "tomorrow";
+      const when = dueDayString(task.dueDate!) === businessDateString(now) ? "today" : "tomorrow";
       const to = recipients(task);
       for (const id of to.ids) {
         await NotificationService.create({
@@ -64,7 +64,7 @@ export class ReminderService {
           userId: id,
           type: "TASK_OVERDUE",
           title: "Task overdue",
-          message: `'${task.title}' was due on ${format(task.dueDate!, "MMM d")}${to.orphan ? ", and nobody active is assigned to it" : ""}`,
+          message: `'${task.title}' was due on ${formatDueDay(task.dueDate!)}${to.orphan ? ", and nobody active is assigned to it" : ""}`,
           projectId: task.projectId,
           taskId: task.id,
           email: true

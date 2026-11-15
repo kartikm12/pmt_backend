@@ -1,7 +1,8 @@
 import { prisma } from "../prisma/client.js";
 import { PROJECT_STATUS, TASK_STATUS } from "../constants/enums.js";
-import { addDays, differenceInCalendarDays, endOfDay, startOfDay, startOfToday, subDays, format } from "date-fns";
+import { endOfDay, startOfDay, subDays, format } from "date-fns";
 import { NOT_IN_PAUSED_PROJECT } from "../constants/enums.js";
+import { daysLate, dueAtLeastDaysAgo, endOfDueDay, isPastDueDay } from "../utils/businessDay.js";
 
 const MANAGER_ROLES = ["ADMIN", "MANAGER", "PROJECT_MANAGER"];
 
@@ -60,7 +61,7 @@ export class ReportsService {
     const endRange = days[days.length - 1].end;
     // The same length of time just before, for "vs previous period"
     const prevStart = subDays(startRange, daysCount);
-    const today = startOfToday();
+    const today = new Date(); // "late", "days late" and "on time" use the company's calendar (utils/businessDay)
 
     // All independent reads go out together (Prisma queries start when awaited): each sequential
     // database trip costs ~160 ms on the live hosting
@@ -99,7 +100,7 @@ export class ReportsService {
         where: {
           ...taskBaseWhere,
           status: { not: TASK_STATUS.DONE },
-          dueDate: { lt: startOfToday() }
+          dueDate: dueAtLeastDaysAgo(1)
         },
         select: {
           id: true, title: true, dueDate: true, priority: true,
@@ -126,7 +127,7 @@ export class ReportsService {
       }),
       prisma.task.groupBy({
         by: ["projectId"],
-        where: { ...taskBaseWhere, ...NOT_IN_PAUSED_PROJECT, status: { not: TASK_STATUS.DONE }, dueDate: { lt: startOfToday() } },
+        where: { ...taskBaseWhere, ...NOT_IN_PAUSED_PROJECT, status: { not: TASK_STATUS.DONE }, dueDate: dueAtLeastDaysAgo(1) },
         _count: true
       })
     ]);
@@ -154,7 +155,7 @@ export class ReportsService {
     // Headline numbers: this period against the same length of time just before
     const inWindow = (d: Date | null, from: Date, to: Date) => !!d && d >= from && d <= to;
     // Deadlines are whole days: finishing any time on the due day counts as on time
-    const onTime = (t: { completedAt: Date | null; dueDate: Date | null }) => !!t.completedAt && !!t.dueDate && t.completedAt < addDays(startOfDay(t.dueDate), 1);
+    const onTime = (t: { completedAt: Date | null; dueDate: Date | null }) => !!t.completedAt && !!t.dueDate && t.completedAt < endOfDueDay(t.dueDate);
     const periodNumbers = (from: Date, to: Date) => {
       const done = tasksInRange.filter((t) => t.status === TASK_STATUS.DONE && inWindow(t.completedAt, from, to));
       const withDeadline = done.filter((t) => t.dueDate);
@@ -185,7 +186,7 @@ export class ReportsService {
       const completedTasks = p.tasks.filter((t) => t.status === TASK_STATUS.DONE);
       const loggedMinutes = p.tasks.reduce((s, t) => s + t.timeEntries.reduce((m, e) => m + e.minutes, 0), 0);
       const estimated = p.tasks.reduce((s, t) => s + (t.estimateHours ?? 0), 0);
-      const overdue = p.tasks.filter((t) => t.status !== TASK_STATUS.DONE && t.dueDate && t.dueDate < today).length;
+      const overdue = p.tasks.filter((t) => t.status !== TASK_STATUS.DONE && t.dueDate && isPastDueDay(t.dueDate, today)).length;
       const progress = p.tasks.length ? completedTasks.length / p.tasks.length : 0;
       // Share of the project's time already used; "behind" when work done trails it by more than a quarter
       const span = p.startDate && p.dueDate ? p.dueDate.getTime() - p.startDate.getTime() : 0;
@@ -194,7 +195,7 @@ export class ReportsService {
       if (overdue) reasons.push(`${overdue} overdue task${overdue === 1 ? "" : "s"}`);
       if (p.tasks.length && elapsed - progress > 0.25) reasons.push("behind schedule");
       if (estimated > 0 && loggedMinutes / 60 > estimated) reasons.push("over its estimate");
-      const health = p.dueDate && p.dueDate < today && progress < 1 ? "overdue" : reasons.length ? "at_risk" : "on_track";
+      const health = p.dueDate && isPastDueDay(p.dueDate, today) && progress < 1 ? "overdue" : reasons.length ? "at_risk" : "on_track";
       return {
         id: p.id,
         dueDate: p.dueDate?.toISOString() ?? null,
@@ -217,7 +218,7 @@ export class ReportsService {
       id: t.id,
       title: t.title,
       dueDate: t.dueDate?.toISOString(),
-      daysLate: t.dueDate ? differenceInCalendarDays(today, t.dueDate) : 0,
+      daysLate: t.dueDate ? daysLate(t.dueDate, today) : 0,
       priority: t.priority,
       project: t.project,
       assignees: t.assignees
@@ -243,7 +244,7 @@ export class ReportsService {
         } else if (task.status === TASK_STATUS.IN_PROGRESS) {
           stats.inProgress++;
         }
-        if (task.status !== TASK_STATUS.DONE && task.dueDate && task.dueDate < today) stats.overdue++;
+        if (task.status !== TASK_STATUS.DONE && task.dueDate && isPastDueDay(task.dueDate, today)) stats.overdue++;
       }
     }
     
