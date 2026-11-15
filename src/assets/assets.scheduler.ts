@@ -1,4 +1,5 @@
-import { addDays, subDays, startOfDay } from "date-fns";
+import { subDays } from "date-fns";
+import { dueWithinDays } from "../utils/businessDay.js";
 import { prisma } from "../prisma/client.js";
 import { NotificationService } from "../services/notification.service.js";
 
@@ -6,8 +7,8 @@ const DEFAULT_ASSET_SCHEDULER_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 export class AssetScheduler {
   static async run(now = new Date()) {
-    const today = startOfDay(now);
-    const thirtyDaysAhead = addDays(today, 30);
+    // Ends today or within the next 30 days, by the company's calendar (utils/businessDay)
+    const nextThirtyDays = dueWithinDays(0, 31, now);
     const threeDaysAgo = subDays(now, 3);
 
     // 1. Warranty expiring in 30 days
@@ -15,7 +16,7 @@ export class AssetScheduler {
       where: {
         deletedAt: null,
         status: { in: ["IN_STOCK", "ASSIGNED", "IN_REPAIR"] },
-        warrantyEndDate: { gte: today, lte: thirtyDaysAhead },
+        warrantyEndDate: nextThirtyDays,
         warrantyReminderSentAt: null,
         // Licences get the renewal reminder below instead (they used to get both for the same date)
         category: { code: { not: "LIC" } }
@@ -62,7 +63,7 @@ export class AssetScheduler {
       where: {
         deletedAt: null,
         category: { code: "LIC" },
-        warrantyEndDate: { gte: today, lte: thirtyDaysAhead },
+        warrantyEndDate: nextThirtyDays,
         renewalReminderSentAt: null
       }
     });
