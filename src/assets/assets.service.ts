@@ -26,6 +26,11 @@ import { addDays, startOfDay } from "date-fns";
 
 class TagTurnBusy extends Error {}
 
+// Field names in words, for the history ("Changed serial number, vendor")
+const FIELD_WORDS: Record<string, string> = {
+  name: "name", brand: "brand", model: "model", serialNumber: "serial number", condition: "condition", location: "location", vendorName: "vendor"
+};
+
 // Which unique field a failed save clashed on ("assetTag", "serialNumber"), or null if it wasn't a clash
 function uniqueTarget(err: unknown): string | null {
   const e = err as { code?: string; meta?: { target?: string[] | string } };
@@ -599,8 +604,8 @@ export class AssetService {
             assetId: id,
             eventType: "UPDATED",
             performedById: user.id,
-            title: "Asset Details Updated",
-            description: "Asset details were modified",
+            title: "Details changed",
+            description: `Changed ${Object.keys(newValues).map((k) => FIELD_WORDS[k] ?? k).join(", ")}`,
             metadata: { previousValues, newValues }
           }
         });
@@ -1534,8 +1539,8 @@ export class AssetService {
         assetId,
         eventType: "UPDATED",
         performedById: user.id,
-        title: "Photo Uploaded",
-        description: `Uploaded asset photograph: ${file.originalname}`
+        title: "Photo added",
+        description: file.originalname
       }
     });
 
@@ -1576,8 +1581,8 @@ export class AssetService {
         assetId: file.assetId,
         eventType: "UPDATED",
         performedById: user.id,
-        title: "Photo Deleted",
-        description: `Deleted asset photograph: ${file.name}`
+        title: "Photo removed",
+        description: file.name
       }
     });
 
