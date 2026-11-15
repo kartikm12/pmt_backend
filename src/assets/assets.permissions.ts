@@ -22,12 +22,13 @@ export function isManagerRole(role: string): boolean {
  */
 export async function getReportingHierarchyUserIds(managerId: string): Promise<string[]> {
   // One query walks the whole chain (the old loop made one database trip per person in the team).
+  // Removed people are kept in it: their manager must still see what they hold, to collect it.
   // UNION (not UNION ALL) stops on a loop even if one ever slipped into the data.
   const rows = await prisma.$queryRaw<{ id: string }[]>`
     WITH RECURSIVE team AS (
-      SELECT "id" FROM "User" WHERE "reportsToId" = ${managerId} AND "deletedAt" IS NULL
+      SELECT "id" FROM "User" WHERE "reportsToId" = ${managerId}
       UNION
-      SELECT u."id" FROM "User" u JOIN team t ON u."reportsToId" = t."id" WHERE u."deletedAt" IS NULL
+      SELECT u."id" FROM "User" u JOIN team t ON u."reportsToId" = t."id"
     )
     SELECT "id" FROM team WHERE "id" <> ${managerId}`;
   return rows.map((r) => r.id);
@@ -35,13 +36,16 @@ export async function getReportingHierarchyUserIds(managerId: string): Promise<s
 
 /**
  * An item nobody holds that isn't in stock (in repair, lost, retired) belongs to the manager who added it,
- * or whose team member last had it. Other managers don't see it (it used to be visible to every manager).
+ * whose team member had it, or who (with their team) acted on it. Other managers don't see it (it used to be visible to every manager).
  */
 async function isTeamsUnheldAsset(managerId: string, team: string[], asset: { id: string; createdById?: string }) {
   if (asset.createdById === managerId) return true;
   const people = [...team, managerId];
   const had = await prisma.assetAssignment.findFirst({ where: { assetId: asset.id, userId: { in: people } }, select: { id: true } });
-  return !!had;
+  if (had) return true;
+  // ...or that they (or their team) acted on: a manager who sends a shared-stock laptop to repair keeps it
+  const acted = await prisma.assetEvent.findFirst({ where: { assetId: asset.id, performedById: { in: people } }, select: { id: true } });
+  return !!acted;
 }
 
 /** The same rule as a database filter, for lists (a manager's own team ids include the manager). */
@@ -50,7 +54,8 @@ export function managerAssetScope(managerId: string, teamWithSelf: string[]) {
     { currentHolderId: { in: teamWithSelf } },
     { currentHolderId: null, status: "IN_STOCK" as const },
     { currentHolderId: null, createdById: managerId },
-    { currentHolderId: null, assignments: { some: { userId: { in: teamWithSelf } } } }
+    { currentHolderId: null, assignments: { some: { userId: { in: teamWithSelf } } } },
+    { currentHolderId: null, events: { some: { performedById: { in: teamWithSelf } } } }
   ];
 }
 

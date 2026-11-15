@@ -24,6 +24,8 @@ import type {
 } from "./assets.types.ts";
 import { addDays, startOfDay } from "date-fns";
 
+class TagTurnBusy extends Error {}
+
 // Which unique field a failed save clashed on ("assetTag", "serialNumber"), or null if it wasn't a clash
 function uniqueTarget(err: unknown): string | null {
   const e = err as { code?: string; meta?: { target?: string[] | string } };
@@ -33,6 +35,29 @@ function uniqueTarget(err: unknown): string | null {
 }
 
 export class AssetService {
+  /**
+   * The person an item is handed to: exists, active, approved, and (for a manager) in their Reports to chain.
+   * Used by every hand-over: assign, add-and-assign, and "repair done, hand to someone".
+   */
+  static async assertCanReceive(user: { id: string; role: string }, employeeId: string) {
+    const target = await prisma.user.findFirst({ where: { id: employeeId, deletedAt: null } });
+    if (!target) throw new ApiError(400, "Assigned employee not found");
+    if (target.status === "SUSPENDED") throw new ApiError(400, "Cannot assign assets to a suspended employee");
+    if (target.pendingApproval) throw new ApiError(400, "This person's sign-up hasn't been approved yet. Approve them on the Team page first.");
+    if (!isAdmin(user.role) && employeeId !== user.id) {
+      const team = await getReportingHierarchyUserIds(user.id);
+      if (!team.includes(employeeId)) throw new ApiError(403, "You can only assign assets to employees within your reporting hierarchy");
+    }
+    return target;
+  }
+
+  /** A project named on a hand-over must exist (a made-up one used to crash the save) */
+  static async assertProjectOk(projectId?: string | null) {
+    if (!projectId) return;
+    const found = await prisma.project.findFirst({ where: { id: projectId, deletedAt: null }, select: { id: true } });
+    if (!found) throw new ApiError(400, "That project doesn't exist any more. Pick another or leave it empty.");
+  }
+
   /**
    * Generates next unique asset tag for a category code: ENT-<CODE>-0001
    */
@@ -61,6 +86,17 @@ export class AssetService {
   /**
    * Validates case-insensitive serial number uniqueness across all assets (including deleted)
    */
+  static async claimSerial(tx: Prisma.TransactionClient, serialNumber: string | null | undefined, excludeAssetId?: string) {
+    const serial = serialNumber?.trim();
+    if (!serial) return;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"asset-serial:" + serial.toLowerCase()}))`;
+    const taken = await tx.asset.findFirst({
+      where: { serialNumber: { equals: serial, mode: "insensitive" }, ...(excludeAssetId ? { id: { not: excludeAssetId } } : {}) },
+      select: { id: true }
+    });
+    if (taken) throw new ApiError(400, `An asset with serial number '${serial}' already exists.`);
+  }
+
   static async validateSerialNumberUnique(serialNumber?: string | null, excludeAssetId?: string): Promise<void> {
     if (!serialNumber || !serialNumber.trim()) return;
 
@@ -363,6 +399,9 @@ export class AssetService {
       if (targetEmployee.status === "SUSPENDED") {
         throw new ApiError(400, "Cannot assign assets to a suspended employee");
       }
+      if (targetEmployee.pendingApproval) {
+        throw new ApiError(400, "This person's sign-up hasn't been approved yet. Approve them on the Team page first.");
+      }
 
       // If manager, check employee is in manager's hierarchy
       if (!isAdmin(user.role)) {
@@ -374,18 +413,24 @@ export class AssetService {
     }
 
     const isAssign = input.assignmentType === "ASSIGN" && input.employeeId;
+    if (isAssign) await this.assertProjectOk(input.projectId);
     const initialStatus = isAssign ? "ASSIGNED" : "IN_STOCK";
 
     // Two people adding a laptop in the same second would both get the next free tag: the second save then
     // hits the unique tag and simply tries the following number (a few times) instead of failing.
     let createdAsset!: Awaited<ReturnType<typeof prisma.asset.create>>;
+    let clashes = 0;
     for (let attempt = 0; ; attempt++) {
     let assetTag = "";
     try {
     createdAsset = await prisma.$transaction(async (tx) => {
-      // Additions in the same category queue here for a moment (released when this save ends), so each one
-      // sees the tag the one before it took: 12 laptops added at once get 12 different numbers.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"asset-tag:" + category.code.toUpperCase()}))`;
+      // Additions in the same category take turns picking the next number (the turn ends when this save
+      // ends), so 150 laptops added at once get 150 different tags. A save that finds it isn't its turn gives
+      // its database connection back and tries again shortly: waiting while holding a connection ran the
+      // server out of connections under load (150 at once: 120 failed, and every other request stalled).
+      const [turn] = await tx.$queryRaw<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtext(${"asset-tag:" + category.code.toUpperCase()})) AS ok`;
+      if (!turn?.ok) throw new TagTurnBusy();
+      await this.claimSerial(tx, input.serialNumber);
       assetTag = await this.generateAssetTag(category.code, tx);
       const asset = await tx.asset.create({
         data: {
@@ -458,8 +503,13 @@ export class AssetService {
     });
     break;
     } catch (err) {
+      if (err instanceof TagTurnBusy) {
+        if (attempt > 600) throw new ApiError(503, "Lots of assets are being added right now. Try again in a moment.");
+        await new Promise((r) => setTimeout(r, 15 + Math.random() * 45));
+        continue;
+      }
       const target = uniqueTarget(err);
-      if (target === "assetTag" && attempt < 5) continue;
+      if (target === "assetTag" && ++clashes < 5) continue;
       if (target === "serialNumber") throw new ApiError(400, `An asset with serial number '${input.serialNumber}' already exists.`);
       throw err;
     }
@@ -518,6 +568,7 @@ export class AssetService {
     }
 
     const updated = await prisma.$transaction(async (tx) => {
+      if (input.serialNumber && input.serialNumber.trim() !== asset.serialNumber) await this.claimSerial(tx, input.serialNumber, id);
       const res = await tx.asset.update({
         where: { id },
         data: {
@@ -533,7 +584,12 @@ export class AssetService {
           purchaseCost: input.purchaseCost !== undefined ? (input.purchaseCost !== null ? Number(input.purchaseCost) : null) : undefined,
           vendorName: input.vendorName !== undefined ? (input.vendorName?.trim() || null) : undefined,
           warrantyStartDate: input.warrantyStartDate !== undefined ? (input.warrantyStartDate ? new Date(input.warrantyStartDate) : null) : undefined,
-          warrantyEndDate: input.warrantyEndDate !== undefined ? (input.warrantyEndDate ? new Date(input.warrantyEndDate) : null) : undefined
+          warrantyEndDate: input.warrantyEndDate !== undefined ? (input.warrantyEndDate ? new Date(input.warrantyEndDate) : null) : undefined,
+          // A new warranty or renewal date gets its own reminder (the old "already reminded" mark is cleared)
+          ...(input.warrantyEndDate !== undefined &&
+          String(input.warrantyEndDate ? new Date(input.warrantyEndDate).getTime() : "") !== String(asset.warrantyEndDate ? asset.warrantyEndDate.getTime() : "")
+            ? { warrantyReminderSentAt: null, renewalReminderSentAt: null }
+            : {})
         }
       });
 
@@ -579,6 +635,9 @@ export class AssetService {
     if (targetEmployee.status === "SUSPENDED") {
       throw new ApiError(400, "Cannot assign assets to a suspended employee");
     }
+    if (targetEmployee.pendingApproval) {
+      throw new ApiError(400, "This person's sign-up hasn't been approved yet. Approve them on the Team page first.");
+    }
 
     // Hierarchy check for manager
     if (!isAdmin(user.role)) {
@@ -587,6 +646,8 @@ export class AssetService {
         throw new ApiError(403, "You can only assign assets to employees within your reporting hierarchy");
       }
     }
+
+    await this.assertProjectOk(input.projectId);
 
     // Transaction with optimistic concurrency check
     const updated = await prisma.$transaction(async (tx) => {
@@ -797,8 +858,10 @@ export class AssetService {
         });
       }
 
-      await tx.asset.update({
-        where: { id },
+      // The condition is part of the write: a second click, or a request for something no longer in
+      // that state, changes nothing and is told so (the old check-then-write let both through)
+      const claimed = await tx.asset.updateMany({
+        where: { id, currentHolderId: { not: null } },
         data: {
           status: newStatus,
           condition: input.returnCondition,
@@ -806,6 +869,7 @@ export class AssetService {
           projectId: null
         }
       });
+      if (claimed.count === 0) throw new ApiError(409, `Nobody has this asset, so there's nothing to take back.`);
 
       await tx.assetEvent.create({
         data: {
@@ -863,13 +927,16 @@ export class AssetService {
         });
       }
 
-      await tx.asset.update({
-        where: { id },
+      // The condition is part of the write: a second click, or a request for something no longer in
+      // that state, changes nothing and is told so (the old check-then-write let both through)
+      const claimed = await tx.asset.updateMany({
+        where: { id, status: { in: ["ASSIGNED", "IN_STOCK"] } },
         data: {
           status: "IN_REPAIR",
           currentHolderId: null
         }
       });
+      if (claimed.count === 0) throw new ApiError(409, `Only items in stock or handed out can go to repair.`);
 
       await tx.assetEvent.create({
         data: {
@@ -909,10 +976,12 @@ export class AssetService {
     }
 
     const isAssign = input.disposition === "ASSIGN" && input.employeeId;
+    const receiver = isAssign && input.employeeId ? await this.assertCanReceive(user, input.employeeId) : null;
+    if (isAssign) await this.assertProjectOk(input.projectId);
 
     await prisma.$transaction(async (tx) => {
-      await tx.asset.update({
-        where: { id },
+      const claimed = await tx.asset.updateMany({
+        where: { id, deletedAt: null, status: "IN_REPAIR" },
         data: {
           status: isAssign ? "ASSIGNED" : "IN_STOCK",
           condition: input.condition,
@@ -920,8 +989,10 @@ export class AssetService {
           projectId: isAssign && input.projectId ? input.projectId : null
         }
       });
+      if (claimed.count === 0) throw new ApiError(409, "It's no longer in repair (someone else just finished it).");
 
       if (isAssign && input.employeeId) {
+        await tx.assetAssignment.updateMany({ where: { assetId: id, isCurrent: true }, data: { isCurrent: false, returnedAt: new Date() } });
         await tx.assetAssignment.create({
           data: {
             assetId: id,
@@ -952,6 +1023,18 @@ export class AssetService {
         }
       });
     });
+
+    if (receiver && input.employeeId) {
+      await NotificationService.create({
+        userId: input.employeeId,
+        assetId: id,
+        type: "ASSET_ASSIGNED" as any,
+        title: "New Asset Assigned",
+        message: `You have been assigned an asset back from repair: ${asset.name} (${asset.assetTag}). Please confirm receipt.`,
+        email: true,
+        emailLink: `/assets/${id}`
+      });
+    }
 
     return this.getAssetById(id, user);
   }
@@ -990,13 +1073,16 @@ export class AssetService {
         });
       }
 
-      await tx.asset.update({
-        where: { id },
+      // The condition is part of the write: a second click, or a request for something no longer in
+      // that state, changes nothing and is told so (the old check-then-write let both through)
+      const claimed = await tx.asset.updateMany({
+        where: { id, status: { notIn: ["LOST", "RETIRED"] } },
         data: {
           status: "LOST",
           currentHolderId: null
         }
       });
+      if (claimed.count === 0) throw new ApiError(409, `It's already marked lost or retired.`);
 
       await tx.assetEvent.create({
         data: {
@@ -1046,13 +1132,16 @@ export class AssetService {
         });
       }
 
-      await tx.asset.update({
-        where: { id },
+      // The condition is part of the write: a second click, or a request for something no longer in
+      // that state, changes nothing and is told so (the old check-then-write let both through)
+      const claimed = await tx.asset.updateMany({
+        where: { id, status: { not: "RETIRED" }, currentHolderId: null },
         data: {
           status: "RETIRED",
           currentHolderId: null
         }
       });
+      if (claimed.count === 0) throw new ApiError(409, `Someone still has it, or it's already retired. Take it back first, then retire it.`);
 
       await tx.assetEvent.create({
         data: {
@@ -1083,13 +1172,16 @@ export class AssetService {
     }
 
     await prisma.$transaction(async (tx) => {
-      await tx.asset.update({
-        where: { id },
+      // The condition is part of the write: a second click, or a request for something no longer in
+      // that state, changes nothing and is told so (the old check-then-write let both through)
+      const claimed = await tx.asset.updateMany({
+        where: { id, deletedAt: null },
         data: {
           deletedAt: new Date(),
           currentHolderId: null
         }
       });
+      if (claimed.count === 0) throw new ApiError(404, `Asset not found`);
 
       await tx.assetAssignment.updateMany({
         where: { assetId: id, isCurrent: true },
@@ -1124,14 +1216,17 @@ export class AssetService {
     }
 
     await prisma.$transaction(async (tx) => {
-      await tx.asset.update({
-        where: { id },
+      // The condition is part of the write: a second click, or a request for something no longer in
+      // that state, changes nothing and is told so (the old check-then-write let both through)
+      const claimed = await tx.asset.updateMany({
+        where: { id, deletedAt: { not: null } },
         data: {
           deletedAt: null,
           status: "IN_STOCK",
           currentHolderId: null
         }
       });
+      if (claimed.count === 0) throw new ApiError(404, `Deleted asset not found`);
 
       await tx.assetEvent.create({
         data: {

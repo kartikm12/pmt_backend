@@ -16,7 +16,9 @@ export class AssetScheduler {
         deletedAt: null,
         status: { in: ["IN_STOCK", "ASSIGNED", "IN_REPAIR"] },
         warrantyEndDate: { gte: today, lte: thirtyDaysAhead },
-        warrantyReminderSentAt: null
+        warrantyReminderSentAt: null,
+        // Licences get the renewal reminder below instead (they used to get both for the same date)
+        category: { code: { not: "LIC" } }
       },
       include: {
         currentHolder: { select: { id: true, fullName: true, reportsToId: true } }

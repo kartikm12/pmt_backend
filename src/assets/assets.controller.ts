@@ -5,18 +5,29 @@ import { ApiError } from "../utils/apiError.js";
 export class AssetController {
   static async list(req: Request, res: Response) {
     const user = { id: req.user!.userId, role: req.user!.role };
-    const filters = {
-      search: req.query.search as string | undefined,
-      categoryId: req.query.categoryId as string | undefined,
-      status: req.query.status as string | undefined,
-      holderId: req.query.holderId as string | undefined,
-      warrantyExpiry: req.query.warrantyExpiry as any,
-      page: req.query.page ? parseInt(req.query.page as string, 10) : 1,
-      limit: req.query.limit ? parseInt(req.query.limit as string, 10) : 20,
-      sortBy: (req.query.sortBy as string) || "createdAt",
-      sortOrder: (req.query.sortOrder as any) || "desc",
-      includeDeleted: req.query.includeDeleted === "true"
+    // Whatever arrives in the address is cleaned here: an unknown sort field, status or page used to
+    // crash the list, and any page size was honoured (100,000 at once)
+    const q = (k: string) => (typeof req.query[k] === "string" ? (req.query[k] as string) : undefined);
+    const whole = (v: string | undefined, fallback: number, min: number, max: number) => {
+      const n = Number.parseInt(v ?? "", 10);
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
     };
+    const SORTABLE = ["createdAt", "updatedAt", "assetTag", "name", "status", "warrantyEndDate", "purchaseDate"];
+    const STATUSES = ["IN_STOCK", "ASSIGNED", "IN_REPAIR", "LOST", "RETIRED"];
+    const status = q("status");
+    const filters = {
+      search: q("search")?.slice(0, 100),
+      categoryId: q("categoryId"),
+      status: status && STATUSES.includes(status) ? status : undefined,
+      holderId: q("holderId"),
+      warrantyExpiry: q("warrantyExpiry") as any,
+      page: whole(q("page"), 1, 1, 100000),
+      limit: whole(q("limit"), 20, 1, 100),
+      sortBy: SORTABLE.includes(q("sortBy") ?? "") ? (q("sortBy") as string) : "createdAt",
+      sortOrder: (q("sortOrder") === "asc" ? "asc" : "desc") as "asc" | "desc",
+      includeDeleted: q("includeDeleted") === "true"
+    };
+    if (status && !filters.status) throw new ApiError(400, "Unknown status. Use IN_STOCK, ASSIGNED, IN_REPAIR, LOST or RETIRED.");
 
     const data = await AssetService.listAssets(user, filters);
     res.json(data);

@@ -238,6 +238,8 @@ export class TeamService {
     await AssetService.handleEmployeeExitAssets(userId);
 
     await prisma.$transaction([
+      // The people who reported to them now report to the leaver's own manager (not to nobody)
+      prisma.user.updateMany({ where: { reportsToId: userId }, data: { reportsToId: user.reportsToId } }),
       prisma.user.update({
         where: { id: userId },
         data: { deletedAt: new Date() }
@@ -308,7 +310,11 @@ export class TeamService {
       if (actorRole !== USER_ROLE.ADMIN) {
         throw new ApiError(403, "Only Admins can assign or change reporting managers");
       }
-      await validateReportsTo(userId, input.reportsToId);
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('pmt-reports-to'))`;
+        await validateReportsTo(userId, input.reportsToId ?? null);
+        await tx.user.update({ where: { id: userId }, data: { reportsToId: input.reportsToId ?? null } });
+      }, { timeout: 15000 });
     }
 
     const updatedUser = await prisma.user.update({
@@ -317,8 +323,7 @@ export class TeamService {
         fullName: input.fullName,
         role: input.role,
         title: input.title,
-        status: input.status,
-        reportsToId: input.reportsToId !== undefined ? input.reportsToId : undefined
+        status: input.status
       }
     });
 

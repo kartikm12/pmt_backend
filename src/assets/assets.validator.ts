@@ -2,10 +2,16 @@ import { z } from "zod";
 
 const assetConditionEnum = z.enum(["NEW", "GOOD", "FAIR", "DAMAGED"]);
 
+// A real calendar date: 2026-13-45 or 2026-02-30 used to get through and crash the save
+const realDay = (v: string) => {
+  const [y, m, d] = v.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+};
 const optionalDateString = z
   .string()
   .datetime({ offset: true })
-  .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/))
+  .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(realDay, "That date doesn't exist"))
   .or(z.literal(""))
   .optional()
   .nullable();
@@ -13,7 +19,7 @@ const optionalDateString = z
 export const createAssetSchema = z
   .object({
     categoryId: z.string().min(1, "Category is required"),
-    name: z.string().min(1, "Asset name is required").max(100),
+    name: z.string().trim().min(1, "Asset name is required").max(100),
     brand: z.string().max(100).optional().nullable(),
     model: z.string().max(100).optional().nullable(),
     serialNumber: z.string().max(100).optional().nullable(),
@@ -58,7 +64,7 @@ export const createAssetSchema = z
 
 export const updateAssetSchema = z
   .object({
-    name: z.string().min(1).max(100).optional(),
+    name: z.string().trim().min(1, "Asset name is required").max(100).optional(),
     categoryId: z.string().min(1).optional(),
     brand: z.string().max(100).optional().nullable(),
     model: z.string().max(100).optional().nullable(),
@@ -132,8 +138,9 @@ export const reportProblemSchema = z.object({
 });
 
 export const createCategorySchema = z.object({
-  name: z.string().min(1, "Category name is required").max(50),
-  code: z.string().min(2, "Code must be at least 2 characters").max(10).toUpperCase(),
+  name: z.string().trim().min(1, "Category name is required").max(50),
+  // Letters and digits only: the code goes into every tag (ENT-CODE-0001), so no spaces or dashes
+  code: z.string().trim().toUpperCase().pipe(z.string().regex(/^[A-Z0-9]{2,10}$/, "Use 2 to 10 letters or digits for the code")),
   description: z.string().max(200).optional().nullable()
 });
 

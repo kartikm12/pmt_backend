@@ -9,7 +9,8 @@ export const inviteTeamMemberSchema = z.object({
   title: z.string().max(120).optional(),
   projectId: z.string().min(1).optional(),
   membershipRole: z.nativeEnum(MEMBERSHIP_ROLE).optional(),
-  reportsToId: z.string().nullable().optional()
+  // "" from a cleared picker means nobody (it used to fail as a missing person)
+  reportsToId: z.preprocess((v) => (v === "" ? null : v), z.string().min(1).nullable().optional())
 });
 
 export const approveSignupSchema = z.object({
@@ -23,5 +24,6 @@ export const updateTeamMemberSchema = z.object({
   status: z.enum(["ACTIVE", "SUSPENDED"]).optional(),
   projectId: z.string().min(1).optional(),
   membershipRole: z.nativeEnum(MEMBERSHIP_ROLE).optional(),
-  reportsToId: z.string().nullable().optional()
+  // "" from a cleared picker means nobody (it used to fail as a missing person)
+  reportsToId: z.preprocess((v) => (v === "" ? null : v), z.string().min(1).nullable().optional())
 });
