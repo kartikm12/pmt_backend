@@ -164,7 +164,7 @@ assetRouter.post(
 // 13. File Management (Photos)
 assetRouter.post(
   "/:id/photos",
-  authorize(USER_ROLE.MANAGER, USER_ROLE.PROJECT_MANAGER, USER_ROLE.ADMIN),
+  // Managers, and the person holding it (a photo with "Report a problem"); the service checks which
   photoUpload.single("photo"),
   asyncHandler(AssetController.uploadPhoto)
 );

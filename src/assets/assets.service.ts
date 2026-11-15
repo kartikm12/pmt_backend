@@ -9,6 +9,7 @@ import {
   getReportingHierarchyUserIds,
   canAccessAsset,
   canManageAsset,
+  managerAssetScope,
   sanitizeAssetForUser
 } from "./assets.permissions.js";
 import type {
@@ -23,15 +24,23 @@ import type {
 } from "./assets.types.ts";
 import { addDays, startOfDay } from "date-fns";
 
+// Which unique field a failed save clashed on ("assetTag", "serialNumber"), or null if it wasn't a clash
+function uniqueTarget(err: unknown): string | null {
+  const e = err as { code?: string; meta?: { target?: string[] | string } };
+  if (e?.code !== "P2002") return null;
+  const t = e.meta?.target;
+  return (Array.isArray(t) ? t.join(",") : t ?? "").replace(/^Asset_|_key$/g, "");
+}
+
 export class AssetService {
   /**
    * Generates next unique asset tag for a category code: ENT-<CODE>-0001
    */
-  static async generateAssetTag(categoryCode: string): Promise<string> {
+  static async generateAssetTag(categoryCode: string, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<string> {
     const cleanCode = categoryCode.trim().toUpperCase();
     const prefix = `ENT-${cleanCode}-`;
 
-    const existingTags = await prisma.asset.findMany({
+    const existingTags = await db.asset.findMany({
       where: { assetTag: { startsWith: prefix } },
       select: { assetTag: true }
     });
@@ -111,10 +120,8 @@ export class AssetService {
 
     if (manager && !admin) {
       // Manager can see: assets assigned to subordinates/self, or unassigned inventory (currentHolderId: null)
-      scopeCondition.OR = [
-        { currentHolderId: { in: hierarchyUserIds } },
-        { currentHolderId: null }
-      ];
+      // Their team's items, the shared in-stock pool, and unheld items that are theirs (repair/lost/retired)
+      scopeCondition.OR = managerAssetScope(user.id, hierarchyUserIds);
     }
 
     // Apply filters
@@ -309,7 +316,9 @@ export class AssetService {
       user.role
     );
 
-    return sanitized;
+    // Lets the page show only the buttons this person may use (each action still checks on its own)
+    const canManage = await canManageAsset(user, asset);
+    return { ...sanitized, canManage, isHolder: asset.currentHolderId === user.id };
   }
 
   /**
@@ -364,14 +373,20 @@ export class AssetService {
       }
     }
 
-    // Generate unique asset tag
-    const assetTag = await this.generateAssetTag(category.code);
-
     const isAssign = input.assignmentType === "ASSIGN" && input.employeeId;
     const initialStatus = isAssign ? "ASSIGNED" : "IN_STOCK";
 
-    // Transaction to create asset, initial assignment, and initial event
-    const createdAsset = await prisma.$transaction(async (tx) => {
+    // Two people adding a laptop in the same second would both get the next free tag: the second save then
+    // hits the unique tag and simply tries the following number (a few times) instead of failing.
+    let createdAsset!: Awaited<ReturnType<typeof prisma.asset.create>>;
+    for (let attempt = 0; ; attempt++) {
+    let assetTag = "";
+    try {
+    createdAsset = await prisma.$transaction(async (tx) => {
+      // Additions in the same category queue here for a moment (released when this save ends), so each one
+      // sees the tag the one before it took: 12 laptops added at once get 12 different numbers.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"asset-tag:" + category.code.toUpperCase()}))`;
+      assetTag = await this.generateAssetTag(category.code, tx);
       const asset = await tx.asset.create({
         data: {
           assetTag,
@@ -441,11 +456,20 @@ export class AssetService {
 
       return asset;
     });
+    break;
+    } catch (err) {
+      const target = uniqueTarget(err);
+      if (target === "assetTag" && attempt < 5) continue;
+      if (target === "serialNumber") throw new ApiError(400, `An asset with serial number '${input.serialNumber}' already exists.`);
+      throw err;
+    }
+    }
 
     // Send notifications if assigned
     if (isAssign && input.employeeId && targetEmployee) {
       await NotificationService.create({
         userId: input.employeeId,
+        assetId: createdAsset.id,
         type: "ASSET_ASSIGNED" as any,
         title: "New Asset Assigned",
         message: `You have been assigned a new asset: ${createdAsset.name} (${createdAsset.assetTag}). Please confirm receipt.`,
@@ -582,8 +606,19 @@ export class AssetService {
         throw new ApiError(400, "Cannot assign a lost asset");
       }
 
-      // Concurrency check: Ensure asset is not concurrently assigned
-      if (asset.status === "ASSIGNED" && asset.currentHolderId) {
+      // Claim it in the same statement that checks it: two managers assigning the same laptop in the same
+      // second can both pass a read-then-write check; here the second one waits for the first, then finds
+      // it taken (0 rows) and gets the 409. (The old check only read.)
+      const claimed = await tx.asset.updateMany({
+        where: {
+          id,
+          deletedAt: null,
+          status: { notIn: ["RETIRED", "LOST"] },
+          NOT: { status: "ASSIGNED", currentHolderId: { not: null } }
+        },
+        data: { status: "ASSIGNED", currentHolderId: input.employeeId }
+      });
+      if (claimed.count === 0) {
         throw new ApiError(409, "This asset has already been assigned.");
       }
 
@@ -642,6 +677,7 @@ export class AssetService {
     // In-app & email notification to employee
     await NotificationService.create({
       userId: input.employeeId,
+      assetId: updated.id,
       type: "ASSET_ASSIGNED" as any,
       title: "New Asset Assigned",
       message: `You have been assigned a new asset: ${updated.name} (${updated.assetTag}). Please confirm receipt.`,
@@ -705,6 +741,7 @@ export class AssetService {
       const currentUser = await prisma.user.findUnique({ where: { id: user.id }, select: { fullName: true } });
       await NotificationService.create({
         userId: currentAssignment.assignedById,
+        assetId: asset.id,
         type: "ASSET_RECEIPT_CONFIRMED" as any,
         title: "Asset Receipt Confirmed",
         message: `${currentUser?.fullName || "Employee"} confirmed receipt of ${asset.name} (${asset.assetTag}).`,
@@ -1154,6 +1191,7 @@ export class AssetService {
     if (managerId) {
       await NotificationService.create({
         userId: managerId,
+        assetId: asset.id,
         type: "ASSET_PROBLEM_REPORTED" as any,
         title: "Asset Problem Reported",
         message: `${holderName} reported an issue with ${asset.name} (${asset.assetTag}): ${input.description.slice(0, 80)}...`,
@@ -1171,6 +1209,7 @@ export class AssetService {
       if (adm.id !== managerId && adm.id !== user.id) {
         await NotificationService.create({
           userId: adm.id,
+          assetId: asset.id,
           type: "ASSET_PROBLEM_REPORTED" as any,
           title: "Asset Problem Reported",
           message: `${holderName} reported an issue with ${asset.name} (${asset.assetTag}).`,
@@ -1370,7 +1409,7 @@ export class AssetService {
       throw new ApiError(404, "Asset not found");
     }
 
-    const canManage = await canManageAsset(user, asset);
+    const canManage = asset.currentHolderId === user.id || (await canManageAsset(user, asset));
     if (!canManage) {
       throw new ApiError(403, "You are not authorized to upload photos for this asset");
     }
@@ -1543,6 +1582,7 @@ export class AssetService {
     if (managerId) {
       await NotificationService.create({
         userId: managerId,
+        assetId: activeAssignments.length === 1 ? activeAssignments[0].assetId : undefined,
         type: "ASSET_COLLECTION_REQUIRED" as any,
         title: "Action Required: Collect Assets",
         message: `${employeeName} is no longer active and has ${activeAssignments.length} asset(s) to collect.`,
@@ -1561,6 +1601,7 @@ export class AssetService {
       if (adm.id !== managerId) {
         await NotificationService.create({
           userId: adm.id,
+          assetId: activeAssignments.length === 1 ? activeAssignments[0].assetId : undefined,
           type: "ASSET_COLLECTION_REQUIRED" as any,
           title: "Action Required: Collect Assets",
           message: `${employeeName} is no longer active and has ${activeAssignments.length} asset(s) pending collection.`,

@@ -140,10 +140,18 @@ export class TeamService {
       title?: string;
       projectId?: string;
       membershipRole?: MembershipRole;
+      reportsToId?: string | null;
     }
   ) {
     this.assertCanManage(actorRole, undefined, input.role);
     if (input.projectId) await this.assertProjectExists(input.projectId);
+    // Checked before the account exists, so a refused manager choice doesn't leave a half-made person
+    if (input.reportsToId) {
+      if (actorRole !== USER_ROLE.ADMIN) throw new ApiError(403, "Only Admins can assign or change reporting managers");
+      const manager = await prisma.user.findFirst({ where: { id: input.reportsToId, deletedAt: null }, select: { status: true } });
+      if (!manager) throw new ApiError(404, "Target manager not found or inactive");
+      if (manager.status === "SUSPENDED") throw new ApiError(400, "Cannot assign a suspended user as reporting manager");
+    }
 
     const registration = await AuthService.register({
       fullName: input.fullName,
@@ -162,10 +170,10 @@ export class TeamService {
       button: { label: "Sign in", url: MailService.appUrl("/login") }
     });
 
-    if (input.title) {
+    if (input.title || input.reportsToId) {
       await prisma.user.update({
         where: { id: registration.user.id },
-        data: { title: input.title }
+        data: { ...(input.title ? { title: input.title } : {}), ...(input.reportsToId ? { reportsToId: input.reportsToId } : {}) }
       });
     }
 

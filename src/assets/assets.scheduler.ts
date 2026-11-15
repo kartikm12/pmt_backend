@@ -45,6 +45,7 @@ export class AssetScheduler {
       for (const userId of recipients) {
         await NotificationService.create({
           userId,
+          assetId: asset.id,
           type: "ASSET_WARRANTY_EXPIRING" as any,
           title: "Asset Warranty Expiring Soon",
           message: `Warranty for ${asset.name} (${asset.assetTag}) expires on ${asset.warrantyEndDate ? asset.warrantyEndDate.toISOString().split("T")[0] : "soon"}.`,
@@ -79,6 +80,7 @@ export class AssetScheduler {
       for (const adm of admins) {
         await NotificationService.create({
           userId: adm.id,
+          assetId: lic.id,
           type: "ASSET_WARRANTY_EXPIRING" as any,
           title: "Software Licence Renewal Due",
           message: `Licence ${lic.name} (${lic.assetTag}) renewal is due by ${lic.warrantyEndDate ? lic.warrantyEndDate.toISOString().split("T")[0] : "soon"}.`,
@@ -113,6 +115,7 @@ export class AssetScheduler {
       if (assignment.assignedById) {
         await NotificationService.create({
           userId: assignment.assignedById,
+          assetId: assignment.assetId,
           type: "ASSET_RECEIPT_PENDING" as any,
           title: "Asset Receipt Confirmation Pending",
           message: `${assignment.user.fullName} has not confirmed receipt of ${assignment.asset.name} (${assignment.asset.assetTag}) assigned 3+ days ago.`,
@@ -124,6 +127,7 @@ export class AssetScheduler {
       // Also remind employee to confirm receipt
       await NotificationService.create({
         userId: assignment.userId,
+        assetId: assignment.assetId,
         type: "ASSET_RECEIPT_PENDING" as any,
         title: "Reminder: Confirm Asset Receipt",
         message: `Please confirm receipt of your assigned asset: ${assignment.asset.name} (${assignment.asset.assetTag}).`,

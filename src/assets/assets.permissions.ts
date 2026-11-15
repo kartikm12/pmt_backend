@@ -21,28 +21,37 @@ export function isManagerRole(role: string): boolean {
  * Recursively retrieves all direct and indirect report user IDs for a given manager.
  */
 export async function getReportingHierarchyUserIds(managerId: string): Promise<string[]> {
-  const result = new Set<string>();
-  const queue = [managerId];
+  // One query walks the whole chain (the old loop made one database trip per person in the team).
+  // UNION (not UNION ALL) stops on a loop even if one ever slipped into the data.
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    WITH RECURSIVE team AS (
+      SELECT "id" FROM "User" WHERE "reportsToId" = ${managerId} AND "deletedAt" IS NULL
+      UNION
+      SELECT u."id" FROM "User" u JOIN team t ON u."reportsToId" = t."id" WHERE u."deletedAt" IS NULL
+    )
+    SELECT "id" FROM team WHERE "id" <> ${managerId}`;
+  return rows.map((r) => r.id);
+}
 
-  while (queue.length > 0) {
-    const currentId = queue.shift()!;
-    const directReports = await prisma.user.findMany({
-      where: {
-        reportsToId: currentId,
-        deletedAt: null
-      },
-      select: { id: true }
-    });
+/**
+ * An item nobody holds that isn't in stock (in repair, lost, retired) belongs to the manager who added it,
+ * or whose team member last had it. Other managers don't see it (it used to be visible to every manager).
+ */
+async function isTeamsUnheldAsset(managerId: string, team: string[], asset: { id: string; createdById?: string }) {
+  if (asset.createdById === managerId) return true;
+  const people = [...team, managerId];
+  const had = await prisma.assetAssignment.findFirst({ where: { assetId: asset.id, userId: { in: people } }, select: { id: true } });
+  return !!had;
+}
 
-    for (const report of directReports) {
-      if (!result.has(report.id)) {
-        result.add(report.id);
-        queue.push(report.id);
-      }
-    }
-  }
-
-  return Array.from(result);
+/** The same rule as a database filter, for lists (a manager's own team ids include the manager). */
+export function managerAssetScope(managerId: string, teamWithSelf: string[]) {
+  return [
+    { currentHolderId: { in: teamWithSelf } },
+    { currentHolderId: null, status: "IN_STOCK" as const },
+    { currentHolderId: null, createdById: managerId },
+    { currentHolderId: null, assignments: { some: { userId: { in: teamWithSelf } } } }
+  ];
 }
 
 /**
@@ -106,12 +115,13 @@ export async function canAccessAsset(
   if (asset.status === "IN_STOCK" && !asset.currentHolderId) return true;
 
   // 3. Assets assigned to anyone in their reporting hierarchy
+  const hierarchy = await getReportingHierarchyUserIds(user.id);
   if (asset.currentHolderId) {
-    const hierarchy = await getReportingHierarchyUserIds(user.id);
     return hierarchy.includes(asset.currentHolderId);
   }
 
-  return true;
+  // 4. Nobody holds it and it isn't in stock: only if it's their team's (see isTeamsUnheldAsset)
+  return isTeamsUnheldAsset(user.id, hierarchy, asset);
 }
 
 /**
@@ -130,13 +140,13 @@ export async function canManageAsset(
 
   if (asset.status === "IN_STOCK") return true;
 
+  if (asset.currentHolderId === user.id) return true;
+  const hierarchy = await getReportingHierarchyUserIds(user.id);
   if (asset.currentHolderId) {
-    if (asset.currentHolderId === user.id) return true;
-    const hierarchy = await getReportingHierarchyUserIds(user.id);
     return hierarchy.includes(asset.currentHolderId);
   }
 
-  return true;
+  return isTeamsUnheldAsset(user.id, hierarchy, asset as { id: string; createdById?: string });
 }
 
 /**

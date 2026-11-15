@@ -54,12 +54,12 @@ export class NotificationService {
     });
 
     if (email) {
-      const link = data.taskId ? `/tasks/${data.taskId}` : data.projectId ? `/projects/${data.projectId}` : emailLink ?? "/";
+      const link = data.taskId ? `/tasks/${data.taskId}` : data.projectId ? `/projects/${data.projectId}` : data.assetId ? `/assets/${data.assetId}` : emailLink ?? "/";
       MailService.notify(data.userId, {
         subject: data.title,
         heading: data.title,
         body: data.message,
-        button: { label: data.taskId ? "Open the task" : data.projectId ? "Open the project" : "Open PMT", url: MailService.appUrl(link) }
+        button: { label: data.taskId ? "Open the task" : data.projectId ? "Open the project" : data.assetId ? "Open the asset" : "Open PMT", url: MailService.appUrl(link) }
       });
     }
 
@@ -71,6 +71,7 @@ export class NotificationService {
       message: notification.message,
       projectId: notification.projectId,
       taskId: notification.taskId,
+      assetId: notification.assetId,
       createdAt: notification.createdAt,
       isRead: false
     });
