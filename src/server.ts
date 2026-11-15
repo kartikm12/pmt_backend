@@ -6,6 +6,7 @@ import { socketService } from "./services/socket.service.js";
 import { ReminderService } from "./services/reminder.service.js";
 import { TrashCleanupService } from "./services/trash-cleanup.service.js";
 import { MailService } from "./mail/mail.service.js";
+import { AssetScheduler } from "./assets/assets.scheduler.js";
 
 async function bootstrap() {
   try {
@@ -48,12 +49,14 @@ async function bootstrap() {
 
     const stopReminders = ReminderService.start();
     const stopTrashCleanup = TrashCleanupService.start();
+    const stopAssetScheduler = AssetScheduler.start();
 
     const shutdown = async () => {
       console.log("Shutting down gracefully...");
       clearInterval(sessionCleanupTimer);
       stopReminders();
       stopTrashCleanup();
+      stopAssetScheduler();
       httpServer.close();
       await prisma.$disconnect();
       process.exit(0);

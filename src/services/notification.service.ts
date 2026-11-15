@@ -11,7 +11,8 @@ export class NotificationService {
       take: 200,
       include: {
         project: { select: { id: true, name: true, deletedAt: true } },
-        task: { select: { id: true, title: true, deletedAt: true } }
+        task: { select: { id: true, title: true, deletedAt: true } },
+        asset: { select: { id: true, assetTag: true, name: true, status: true } }
       }
     });
   }
@@ -37,6 +38,7 @@ export class NotificationService {
     message: string;
     projectId?: string;
     taskId?: string;
+    assetId?: string;
     // Also email it (sent in the background; the person can turn these off in Settings)
     email?: boolean;
     emailLink?: string;

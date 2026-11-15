@@ -8,7 +8,8 @@ export const inviteTeamMemberSchema = z.object({
   role: z.nativeEnum(USER_ROLE).optional(),
   title: z.string().max(120).optional(),
   projectId: z.string().min(1).optional(),
-  membershipRole: z.nativeEnum(MEMBERSHIP_ROLE).optional()
+  membershipRole: z.nativeEnum(MEMBERSHIP_ROLE).optional(),
+  reportsToId: z.string().nullable().optional()
 });
 
 export const approveSignupSchema = z.object({
@@ -21,5 +22,6 @@ export const updateTeamMemberSchema = z.object({
   title: z.string().max(120).optional(),
   status: z.enum(["ACTIVE", "SUSPENDED"]).optional(),
   projectId: z.string().min(1).optional(),
-  membershipRole: z.nativeEnum(MEMBERSHIP_ROLE).optional()
+  membershipRole: z.nativeEnum(MEMBERSHIP_ROLE).optional(),
+  reportsToId: z.string().nullable().optional()
 });

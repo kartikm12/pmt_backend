@@ -85,46 +85,106 @@ enum NotificationType {
   TEAM_INVITE
   COMMENT_MENTION
   SYSTEM
+  ASSET_ASSIGNED
+  ASSET_RECEIPT_CONFIRMED
+  ASSET_RECEIPT_PENDING
+  ASSET_PROBLEM_REPORTED
+  ASSET_WARRANTY_EXPIRING
+  ASSET_COLLECTION_REQUIRED
+  ASSET_RETURNED
+}
+
+enum AssetStatus {
+  IN_STOCK
+  ASSIGNED
+  IN_REPAIR
+  LOST
+  RETIRED
+}
+
+enum AssetCondition {
+  NEW
+  GOOD
+  FAIR
+  DAMAGED
+}
+
+enum AssetAssignmentReceiptStatus {
+  PENDING
+  CONFIRMED
+}
+
+enum AssetAssignmentCollectionStatus {
+  NONE
+  PENDING_COLLECTION
+  COLLECTED
+}
+
+enum AssetEventType {
+  CREATED
+  UPDATED
+  ASSIGNED
+  RECEIPT_CONFIRMED
+  RETURNED
+  MARKED_FOR_REPAIR
+  REPAIR_COMPLETED
+  MARKED_LOST
+  RETIRED
+  DELETED
+  RESTORED
+  PROBLEM_REPORTED
+  COLLECTION_REQUESTED
 }
 
 model User {
-  id              String          @id @default(cuid())
-  email           String          @unique
-  passwordHash    String
+  id                  String               @id @default(cuid())
+  email               String               @unique
+  passwordHash        String
   // Set on every password change or reset; private to the person (hidden by default in src/prisma/client.ts)
-  passwordChangedAt DateTime?
-  fullName        String
-  avatarUrl       String?
-  bio             String?
-  phone           String?
-  title           String?
-  role            UserRole        @default(TEAM_MEMBER)
-  roleLocked      Boolean         @default(true)
+  passwordChangedAt   DateTime?
+  fullName            String
+  avatarUrl           String?
+  bio                 String?
+  phone               String?
+  title               String?
+  role                UserRole             @default(TEAM_MEMBER)
+  roleLocked          Boolean              @default(true)
   // Self sign-ups wait here until a manager approves them
-  pendingApproval Boolean         @default(false)
+  pendingApproval     Boolean              @default(false)
   // Assignment, due-date and mention emails (Settings → Notifications); account emails always go out
-  emailNotifications Boolean      @default(true)
+  emailNotifications  Boolean              @default(true)
   passwordResetTokens PasswordResetToken[]
-  status          UserStatus      @default(ACTIVE)
-  lastLoginAt     DateTime?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  deletedAt       DateTime?
-  managedProjects Project[]       @relation("ProjectManager")
-  assignedTasks   Task[]          @relation("TaskAssignees")
-  createdTasks    Task[]          @relation("TaskCreator")
-  comments        TaskComment[]
-  memberships     ProjectMember[]
-  attachments     Attachment[]
-  activityLogs    ActivityLog[]
-  notifications   Notification[]
-  sessions        UserSession[]
-  createdProjects Project[]       @relation("ProjectCreator")
-  watchedTasks    Task[]          @relation("TaskWatchers")
-  timeEntries     TimeEntry[]
+  status              UserStatus           @default(ACTIVE)
+  lastLoginAt         DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  deletedAt           DateTime?
+  managedProjects     Project[]            @relation("ProjectManager")
+  assignedTasks       Task[]               @relation("TaskAssignees")
+  createdTasks        Task[]               @relation("TaskCreator")
+  comments            TaskComment[]
+  memberships         ProjectMember[]
+  attachments         Attachment[]
+  activityLogs        ActivityLog[]
+  notifications       Notification[]
+  sessions            UserSession[]
+  createdProjects     Project[]            @relation("ProjectCreator")
+  watchedTasks        Task[]               @relation("TaskWatchers")
+  timeEntries         TimeEntry[]
+  // Reporting hierarchy
+  reportsToId         String?
+  reportsTo           User?                @relation("ReportingHierarchy", fields: [reportsToId], references: [id], onDelete: SetNull)
+  subordinates        User[]               @relation("ReportingHierarchy")
+
+  // Assets relations
+  assignedAssets AssetAssignment[] @relation("UserAssetAssignments")
+  heldAssets     Asset[]           @relation("CurrentAssetHolder")
+  assetEvents    AssetEvent[]      @relation("UserAssetEvents")
+  createdAssets  Asset[]           @relation("AssetCreator")
 
   @@index([role, deletedAt])
   @@index([status, deletedAt])
+  @@index([reportsToId])
 }
 
 // "Forgot password" links: only a hash of the token is kept, each works once and expires
@@ -141,39 +201,39 @@ model PasswordResetToken {
 }
 
 model UserSession {
-  id            String   @id
+  id            String    @id
   userId        String
   userAgent     String?
   deviceInfo    String?
   ipAddress     String?
-  isActive      Boolean  @default(true)
+  isActive      Boolean   @default(true)
   revokedAt     DateTime?
   revokedReason String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
   expiresAt     DateTime
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isActive])
   @@index([expiresAt])
 }
 
 model Project {
-  id            String         @id
+  id            String          @id
   name          String
-  slug          String         @unique
+  slug          String          @unique
   description   String?
-  status        ProjectStatus  @default(PLANNING)
+  status        ProjectStatus   @default(PLANNING)
   startDate     DateTime?
   dueDate       DateTime?
   completedAt   DateTime?
   managerId     String
   createdById   String
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
   deletedAt     DateTime?
-  manager       User           @relation("ProjectManager", fields: [managerId], references: [id])
-  createdBy     User           @relation("ProjectCreator", fields: [createdById], references: [id])
+  manager       User            @relation("ProjectManager", fields: [managerId], references: [id])
+  createdBy     User            @relation("ProjectCreator", fields: [createdById], references: [id])
   tasks         Task[]
   members       ProjectMember[]
   attachments   Attachment[]
@@ -183,6 +243,7 @@ model Project {
   // The board's own columns (each counts as one of the four stages) and its rules
   columns       BoardColumn[]
   rules         ProjectRule[]
+  assets        Asset[]         @relation("AssetProject")
 
   @@index([status, deletedAt])
   @@index([managerId, deletedAt])
@@ -208,49 +269,49 @@ model ProjectMember {
 }
 
 model Task {
-  id            String       @id
-  title         String
-  description   String?
-  status        TaskStatus   @default(TODO)
-  priority      TaskPriority @default(MEDIUM)
-  dueDate       DateTime?
-  startedAt     DateTime?
-  completedAt   DateTime?
-  sortOrder     Int          @default(0)
+  id                String         @id
+  title             String
+  description       String?
+  status            TaskStatus     @default(TODO)
+  priority          TaskPriority   @default(MEDIUM)
+  dueDate           DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  sortOrder         Int            @default(0)
   // When the one-off "due soon" / "overdue" reminders went out; cleared when the due date changes
   dueSoonNotifiedAt DateTime?
   overdueNotifiedAt DateTime?
   // Planned start (timeline bars); null = starts when created
-  startDate     DateTime?
-  labels        String[]     @default([])
-  estimateHours Float?
+  startDate         DateTime?
+  labels            String[]       @default([])
+  estimateHours     Float?
   // "DAILY" | "WEEKLY" | "MONTHLY": finishing the task creates the next one (once; see nextOccurrenceId)
-  recurrence       String?
-  nextOccurrenceId String?
-  milestoneId   String?
+  recurrence        String?
+  nextOccurrenceId  String?
+  milestoneId       String?
   // The board column it sits in; status stays the stage that column counts as. null = the first column
   // of its stage (tasks saved before columns existed, or by an older app that only sends a status)
-  columnId      String?
-  projectId     String
-  createdById   String
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-  deletedAt     DateTime?
-  project       Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  milestone     Milestone?   @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
-  column        BoardColumn? @relation(fields: [columnId], references: [id], onDelete: SetNull)
-  ruleRuns      RuleRun[]
-  assignees     User[]       @relation("TaskAssignees")
-  watchers      User[]       @relation("TaskWatchers")
-  blockedBy     Task[]       @relation("TaskDependencies")
-  blocks        Task[]       @relation("TaskDependencies")
-  createdBy     User         @relation("TaskCreator", fields: [createdById], references: [id])
-  comments      TaskComment[]
-  attachments   Attachment[]
-  activityLogs  ActivityLog[]
-  notifications Notification[]
-  subtasks      Subtask[]
-  timeEntries   TimeEntry[]
+  columnId          String?
+  projectId         String
+  createdById       String
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  deletedAt         DateTime?
+  project           Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  milestone         Milestone?     @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  column            BoardColumn?   @relation(fields: [columnId], references: [id], onDelete: SetNull)
+  ruleRuns          RuleRun[]
+  assignees         User[]         @relation("TaskAssignees")
+  watchers          User[]         @relation("TaskWatchers")
+  blockedBy         Task[]         @relation("TaskDependencies")
+  blocks            Task[]         @relation("TaskDependencies")
+  createdBy         User           @relation("TaskCreator", fields: [createdById], references: [id])
+  comments          TaskComment[]
+  attachments       Attachment[]
+  activityLogs      ActivityLog[]
+  notifications     Notification[]
+  subtasks          Subtask[]
+  timeEntries       TimeEntry[]
 
   @@index([projectId, status, deletedAt])
   @@index([dueDate, deletedAt])
@@ -299,15 +360,15 @@ model Milestone {
 }
 
 model TaskComment {
-  id        String   @id @default(cuid())
-  taskId    String
-  userId    String
-  body      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  deletedAt DateTime?
-  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id          String       @id @default(cuid())
+  taskId      String
+  userId      String
+  body        String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  deletedAt   DateTime?
+  task        Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   attachments Attachment[]
 
   @@index([taskId, deletedAt])
@@ -315,7 +376,7 @@ model TaskComment {
 }
 
 model ActivityLog {
-  id          String    @id @default(cuid())
+  id          String         @id @default(cuid())
   action      ActivityAction
   entityType  String
   entityId    String
@@ -324,10 +385,10 @@ model ActivityLog {
   userId      String?
   projectId   String?
   taskId      String?
-  createdAt   DateTime  @default(now())
-  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
-  project     Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  task        Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  createdAt   DateTime       @default(now())
+  user        User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  project     Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task        Task?          @relation(fields: [taskId], references: [id], onDelete: SetNull)
 
   @@index([entityType, entityId, createdAt])
   @@index([projectId, createdAt])
@@ -340,6 +401,7 @@ model Notification {
   userId    String
   projectId String?
   taskId    String?
+  assetId   String?
   type      NotificationType
   title     String
   message   String
@@ -349,10 +411,12 @@ model Notification {
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   project   Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
   task      Task?            @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  asset     Asset?           @relation(fields: [assetId], references: [id], onDelete: SetNull)
 
   @@index([userId, isRead, createdAt])
   @@index([projectId, createdAt])
   @@index([taskId, createdAt])
+  @@index([assetId, createdAt])
 }
 
 model Attachment {
@@ -369,10 +433,10 @@ model Attachment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  task      Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  comment   TaskComment? @relation(fields: [commentId], references: [id], onDelete: SetNull)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task    Task?        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  comment TaskComment? @relation(fields: [commentId], references: [id], onDelete: SetNull)
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([projectId, createdAt])
   @@index([taskId, createdAt])
@@ -430,4 +494,138 @@ model RuleRun {
 
   @@unique([ruleId, taskId, key])
   @@index([taskId])
+}
+
+model AssetCategory {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  code        String   @unique
+  description String?
+  isCustom    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  assets      Asset[]
+
+  @@index([name])
+}
+
+model Asset {
+  id             String         @id @default(cuid())
+  assetTag       String         @unique
+  name           String
+  categoryId     String
+  category       AssetCategory  @relation(fields: [categoryId], references: [id])
+  brand          String?
+  model          String?
+  serialNumber   String?        @unique
+  specifications String?
+  condition      AssetCondition @default(GOOD)
+  status         AssetStatus    @default(IN_STOCK)
+  location       String?
+
+  // Purchase & Warranty
+  purchaseDate           DateTime?
+  purchaseCost           Float?
+  vendorName             String?
+  warrantyStartDate      DateTime?
+  warrantyEndDate        DateTime?
+  warrantyReminderSentAt DateTime?
+  renewalReminderSentAt  DateTime?
+
+  // Current Holder & Project
+  currentHolderId String?
+  currentHolder   User?    @relation("CurrentAssetHolder", fields: [currentHolderId], references: [id], onDelete: SetNull)
+  projectId       String?
+  project         Project? @relation("AssetProject", fields: [projectId], references: [id], onDelete: SetNull)
+
+  // Creator & Soft Delete
+  createdById String
+  createdBy   User      @relation("AssetCreator", fields: [createdById], references: [id])
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  assignments   AssetAssignment[]
+  events        AssetEvent[]
+  files         AssetFile[]
+  notifications Notification[]
+
+  @@index([status, deletedAt])
+  @@index([categoryId, deletedAt])
+  @@index([currentHolderId, deletedAt])
+  @@index([warrantyEndDate])
+  @@index([deletedAt])
+}
+
+model AssetAssignment {
+  id                  String         @id @default(cuid())
+  assetId             String
+  userId              String
+  projectId           String?
+  assignedById        String
+  assignedAt          DateTime       @default(now())
+  assignmentCondition AssetCondition @default(GOOD)
+  notes               String?
+
+  // Receipt confirmation
+  receiptStatus         AssetAssignmentReceiptStatus @default(PENDING)
+  receiptConfirmedAt    DateTime?
+  receiptReminderSentAt DateTime?
+
+  // Return / Handover
+  returnedAt        DateTime?
+  returnCondition   AssetCondition?
+  returnRemarks     String?
+  returnDisposition String?
+  returnedById      String?
+
+  // Employee exit collection
+  collectionStatus AssetAssignmentCollectionStatus @default(NONE)
+  collectionNotes  String?
+
+  // Active flag
+  isCurrent Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  user  User  @relation("UserAssetAssignments", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, isCurrent])
+  @@index([userId, isCurrent])
+  @@index([receiptStatus, isCurrent])
+  @@index([collectionStatus])
+}
+
+model AssetEvent {
+  id            String         @id @default(cuid())
+  assetId       String
+  eventType     AssetEventType
+  performedById String?
+  title         String
+  description   String
+  metadata      Json?
+  createdAt     DateTime       @default(now())
+
+  asset       Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  performedBy User? @relation("UserAssetEvents", fields: [performedById], references: [id], onDelete: SetNull)
+
+  @@index([assetId, createdAt])
+  @@index([eventType])
+}
+
+model AssetFile {
+  id           String   @id @default(cuid())
+  assetId      String
+  name         String
+  url          String
+  mimeType     String
+  fileSize     Int
+  uploadedById String
+  createdAt    DateTime @default(now())
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, createdAt])
 }

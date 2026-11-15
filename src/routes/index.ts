@@ -10,6 +10,7 @@ import { userRouter } from "./user.routes.js";
 import { notificationRouter } from "./notification.routes.js";
 import { attachmentRouter } from "./attachment.routes.js";
 import { searchRouter } from "./search.routes.js";
+import { assetRouter } from "../assets/assets.routes.js";
 export const apiRouter = Router();
 
 apiRouter.use("/auth", authRouter);
@@ -23,3 +24,4 @@ apiRouter.use("/stats", statsRouter);
 apiRouter.use("/notifications", notificationRouter);
 apiRouter.use("/attachments", attachmentRouter);
 apiRouter.use("/search", searchRouter);
+apiRouter.use("/assets", assetRouter);

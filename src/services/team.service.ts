@@ -11,6 +11,8 @@ import { AuthService } from "./auth.service.js";
 import { ActivityService } from "./activity.service.js";
 import { MailService } from "../mail/mail.service.js";
 import { ProjectService } from "./project.service.js";
+import { validateReportsTo } from "../assets/assets.permissions.js";
+import { AssetService } from "../assets/assets.service.js";
 
 export class TeamService {
   static async list() {
@@ -21,6 +23,8 @@ export class TeamService {
       select: {
         id: true, email: true, fullName: true, avatarUrl: true, title: true,
         role: true, roleLocked: true, status: true, createdAt: true,
+        reportsToId: true,
+        reportsTo: { select: { id: true, fullName: true, email: true } },
         memberships: {
           where: { removedAt: null, project: { deletedAt: null } },
           include: {
@@ -30,7 +34,7 @@ export class TeamService {
           }
         },
         _count: {
-          select: { assignedTasks: true }
+          select: { assignedTasks: true, heldAssets: { where: { deletedAt: null } } }
         }
       }
     });
@@ -222,6 +226,9 @@ export class TeamService {
     const managed = await prisma.project.findMany({ where: { managerId: userId }, select: { id: true } });
     for (const p of managed) await ProjectService.takeOverManager(p.id, actorUserId);
 
+    // Identify and flag assigned assets for collection
+    await AssetService.handleEmployeeExitAssets(userId);
+
     await prisma.$transaction([
       prisma.user.update({
         where: { id: userId },
@@ -268,6 +275,7 @@ export class TeamService {
       status?: "ACTIVE" | "SUSPENDED";
       projectId?: string;
       membershipRole?: MembershipRole;
+      reportsToId?: string | null;
     }
   ) {
     const user = await prisma.user.findFirst({
@@ -287,17 +295,28 @@ export class TeamService {
     this.assertCanManage(actorRole, user.role, input.role);
     if (input.projectId) await this.assertProjectExists(input.projectId);
 
+    // Validate reporting hierarchy change if requested
+    if (input.reportsToId !== undefined && input.reportsToId !== user.reportsToId) {
+      if (actorRole !== USER_ROLE.ADMIN) {
+        throw new ApiError(403, "Only Admins can assign or change reporting managers");
+      }
+      await validateReportsTo(userId, input.reportsToId);
+    }
+
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
         fullName: input.fullName,
         role: input.role,
         title: input.title,
-        status: input.status
+        status: input.status,
+        reportsToId: input.reportsToId !== undefined ? input.reportsToId : undefined
       }
     });
 
     if (input.status === "SUSPENDED" && user.status !== "SUSPENDED") {
+      // Identify and flag assigned assets for collection
+      await AssetService.handleEmployeeExitAssets(userId);
       // A reset link sent before the suspension must not still work
       await prisma.passwordResetToken.deleteMany({ where: { userId } });
       await this.endSessions(userId, "USER_SUSPENDED", "Your account has been suspended. Contact your manager.");
