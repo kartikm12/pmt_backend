@@ -13,6 +13,7 @@ import { MailService } from "../mail/mail.service.js";
 import { ProjectService } from "./project.service.js";
 import { validateReportsTo } from "../assets/assets.permissions.js";
 import { AssetService } from "../assets/assets.service.js";
+import { forgetUser } from "../middleware/authCache.js";
 
 export class TeamService {
   static async list() {
@@ -79,6 +80,7 @@ export class TeamService {
   }
 
   static async approve(userId: string, role: UserRole, actor: { userId: string; role: UserRole; fullName?: string }) {
+    forgetUser(userId); // role/status/sessions may change: re-check on their next request
     const user = await this.findPending(userId);
     this.assertCanManage(actor.role, undefined, role);
     // Conditional, so an approve racing a reject (or a second approve) can't both go through
@@ -216,6 +218,7 @@ export class TeamService {
   }
 
   static async remove(userId: string, actorUserId: string, actorRole: UserRole) {
+    forgetUser(userId); // role/status/sessions may change: re-check on their next request
     if (userId === actorUserId) {
       throw new ApiError(400, "You cannot remove yourself from the team");
     }
@@ -250,6 +253,7 @@ export class TeamService {
         data: { removedAt: new Date() }
       })
     ]);
+    forgetUser(userId);
 
     await ActivityService.log({
       action: "TEAM_MEMBER_REMOVED",
@@ -288,6 +292,7 @@ export class TeamService {
       reportsToId?: string | null;
     }
   ) {
+    forgetUser(userId); // role/status/sessions may change: re-check on their next request
     const user = await prisma.user.findFirst({
       where: { id: userId, deletedAt: null }
     });
@@ -326,6 +331,7 @@ export class TeamService {
         status: input.status
       }
     });
+    forgetUser(userId); // and again once saved, so no request in between keeps the old role
 
     if (input.status === "SUSPENDED" && user.status !== "SUSPENDED") {
       // Identify and flag assigned assets for collection

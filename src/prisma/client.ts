@@ -9,7 +9,7 @@ config(); // read .env first if nothing else has yet (never overrides real envir
 // DB_CONNECTION_LIMIT to change it, or put connection_limit in DATABASE_URL yourself (that wins).
 function withConnectionLimit(url: string | undefined): string | undefined {
   if (!url || /[?&]connection_limit=/.test(url)) return url;
-  const limit = Number(process.env.DB_CONNECTION_LIMIT) || 8;
+  const limit = Number(process.env.DB_CONNECTION_LIMIT) || 12; // 12 of the 15 measured fastest (22 Nov); leaves room for scripts
   return `${url}${url.includes("?") ? "&" : "?"}connection_limit=${limit}`;
 }
 

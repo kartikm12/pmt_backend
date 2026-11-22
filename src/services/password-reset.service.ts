@@ -6,6 +6,7 @@ import { ApiError } from "../utils/apiError.js";
 import { MailService } from "../mail/mail.service.js";
 import { socketService } from "./socket.service.js";
 import { ActivityService } from "./activity.service.js";
+import { forgetUser } from "../middleware/authCache.js";
 
 const LINK_MINUTES = 60;
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -52,6 +53,7 @@ export class PasswordResetService {
       prisma.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: now } }),
       prisma.userSession.updateMany({ where: { userId: user.id, isActive: true }, data: { isActive: false, revokedAt: now, revokedReason: "PASSWORD_RESET" } })
     ]);
+    forgetUser(user.id); // their remembered sign-in checks go with the old password
     await socketService.forceLogoutSessions(active.map((s) => s.id), "Your password was changed. Please sign in again.");
     await ActivityService.log({ action: "PROFILE_UPDATED", entityType: "user", entityId: user.id, description: `${user.fullName} reset their password by email`, userId: user.id });
   }

@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { prisma } from "../prisma/client.js";
 import { ApiError } from "../utils/apiError.js";
 import { signAccessToken } from "../utils/jwt.js";
+import { forgetSession, forgetUser } from "../middleware/authCache.js";
 
 type SessionMetadata = {
   userAgent?: string;
@@ -19,6 +20,7 @@ export class SessionService {
     },
     metadata: SessionMetadata = {}
   ) {
+    forgetUser(user.id); // a new sign-in ends their other one: drop its remembered check
     const sessionId = randomUUID();
     const { token, expiresAt } = signAccessToken({
       userId: user.id,
@@ -98,6 +100,7 @@ export class SessionService {
   }
 
   static async invalidateSession(sessionId: string, reason: string) {
+    forgetSession(sessionId);
     await prisma.userSession.updateMany({
       where: {
         id: sessionId,
