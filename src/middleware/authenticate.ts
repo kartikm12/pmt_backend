@@ -16,8 +16,17 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
 
   const token = authHeader.replace("Bearer ", "");
 
+  // 1. Is the sign-in itself good? Only a bad, expired or tampered token means "sign in again"
+  let payload: ReturnType<typeof verifyAccessToken>;
   try {
-    const payload = verifyAccessToken(token);
+    payload = verifyAccessToken(token);
+  } catch {
+    return next(new ApiError(401, "Invalid or expired token"));
+  }
+
+  // 2. Check it against the database. If the database itself fails (busy, connection refused), that is
+  // NOT a bad sign-in: it used to be reported as 401, so the app signed people out during a busy moment.
+  try {
     // Session check and fresh user data (so role changes apply at once) run side by side: this middleware
     // fronts every request, and each sequential database trip costs ~160 ms on the live hosting
     const [, user] = await Promise.all([
@@ -55,6 +64,8 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
     
     next();
   } catch (err) {
-    next(err instanceof ApiError ? err : new ApiError(401, "Invalid or expired token"));
+    if (err instanceof ApiError) return next(err); // ended session, removed person: these are real 401s
+    console.error("Sign-in check couldn't reach the database:", err instanceof Error ? err.message : err);
+    next(new ApiError(503, "The server is busy right now. Try again in a moment."));
   }
 }

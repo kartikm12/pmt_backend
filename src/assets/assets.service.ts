@@ -23,8 +23,21 @@ import type {
   AssetFilterParams
 } from "./assets.types.ts";
 import { addDays, startOfDay } from "date-fns";
+import { businessDateString } from "../utils/businessDay.js";
 
 class TagTurnBusy extends Error {}
+
+// Warranty start and end: from a period in months (start = purchase date, else today in the company's
+// calendar), or the two dates as before. Dates are calendar days, saved as midnight UTC.
+function warrantyDates(input: { purchaseDate?: string | null; warrantyStartDate?: string | null; warrantyEndDate?: string | null; warrantyMonths?: number | null }) {
+  const day = (v?: string | null) => (v && v.trim() ? new Date(v.trim().length === 10 ? `${v.trim()}T00:00:00.000Z` : v) : null);
+  if (input.warrantyMonths) {
+    const startYmd = input.purchaseDate?.trim() ? input.purchaseDate.trim().slice(0, 10) : businessDateString();
+    const [y, m, d] = startYmd.split("-").map(Number);
+    return { warrantyStartDate: new Date(Date.UTC(y, m - 1, d)), warrantyEndDate: new Date(Date.UTC(y, m - 1 + input.warrantyMonths, d)) };
+  }
+  return { warrantyStartDate: day(input.warrantyStartDate), warrantyEndDate: day(input.warrantyEndDate) };
+}
 
 // Field names in words, for the history ("Changed serial number, vendor")
 const FIELD_WORDS: Record<string, string> = {
@@ -452,8 +465,7 @@ export class AssetService {
           purchaseDate: input.purchaseDate && input.purchaseDate.trim() !== "" ? new Date(input.purchaseDate) : null,
           purchaseCost: input.purchaseCost !== undefined && input.purchaseCost !== null ? Number(input.purchaseCost) : null,
           vendorName: input.vendorName?.trim() || null,
-          warrantyStartDate: input.warrantyStartDate && input.warrantyStartDate.trim() !== "" ? new Date(input.warrantyStartDate) : null,
-          warrantyEndDate: input.warrantyEndDate && input.warrantyEndDate.trim() !== "" ? new Date(input.warrantyEndDate) : null,
+          ...warrantyDates(input),
           currentHolderId: isAssign ? input.employeeId : null,
           projectId: isAssign && input.projectId ? input.projectId : null,
           createdById: user.id
@@ -1275,10 +1287,10 @@ export class AssetService {
         assetId: id,
         eventType: "PROBLEM_REPORTED",
         performedById: user.id,
-        title: `Problem Reported: ${input.problemCategory}`,
+        title: "Problem reported",
         description: input.description,
         metadata: {
-          problemCategory: input.problemCategory,
+          problemCategory: input.problemCategory ?? null,
           photoUrl: input.photoUrl || null
         }
       }

@@ -20,6 +20,7 @@ export interface CreateAssetInput {
   vendorName?: string;
   warrantyStartDate?: string;
   warrantyEndDate?: string;
+  warrantyMonths?: number | null;
   assignmentType: "STOCK" | "ASSIGN";
   employeeId?: string;
   projectId?: string;
@@ -71,7 +72,7 @@ export interface CompleteRepairInput {
 }
 
 export interface ReportProblemInput {
-  problemCategory: "HARDWARE" | "SOFTWARE" | "PHYSICAL_DAMAGE" | "LOST_STOLEN" | "OTHER";
+  problemCategory?: "HARDWARE" | "SOFTWARE" | "PHYSICAL_DAMAGE" | "LOST_STOLEN" | "OTHER";
   description: string;
   photoUrl?: string;
 }

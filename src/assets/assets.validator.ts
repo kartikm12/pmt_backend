@@ -31,6 +31,8 @@ export const createAssetSchema = z
     vendorName: z.string().max(100).optional().nullable(),
     warrantyStartDate: optionalDateString,
     warrantyEndDate: optionalDateString,
+    // Warranty as a length in months (the screens send this); the end date is worked out from it
+    warrantyMonths: z.number().int().min(1, "Pick a warranty period").max(120, "Warranty can be at most 10 years").optional().nullable(),
     assignmentType: z.enum(["STOCK", "ASSIGN"]),
     employeeId: z.string().optional().nullable(),
     projectId: z.string().optional().nullable(),
@@ -132,8 +134,8 @@ export const completeRepairSchema = z
   );
 
 export const reportProblemSchema = z.object({
-  problemCategory: z.enum(["HARDWARE", "SOFTWARE", "PHYSICAL_DAMAGE", "LOST_STOLEN", "OTHER"]),
-  description: z.string().min(1, "Description is required").max(2000),
+  problemCategory: z.enum(["HARDWARE", "SOFTWARE", "PHYSICAL_DAMAGE", "LOST_STOLEN", "OTHER"]).optional(),
+  description: z.string().trim().min(1, "Write what the problem is.").max(2000),
   photoUrl: z.string().optional().nullable()
 });
 

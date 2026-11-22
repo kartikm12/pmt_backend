@@ -25,12 +25,18 @@ const PRIORITY_WORD: Record<string, string> = { LOW: "Low", MEDIUM: "Medium", HI
 // so two rules can't keep triggering each other.
 export class RuleService {
   // ------------------------------------------------------------------ editing (project managers + Admins)
+  // Only Admins set up rules (user, 22 Nov); everyone on the project can still see them
+  static async requireAdmin(role: UserRole) {
+    if (role !== "ADMIN") throw new ApiError(403, "Only Admins can set up rules.");
+  }
+
   static async list(projectId: string, userId: string, role: UserRole) {
     await ProjectService.requireProjectRole(projectId, userId, role, "viewer", { closedOk: true });
     return prisma.projectRule.findMany({ where: { projectId }, orderBy: { createdAt: "asc" } });
   }
 
   static async create(projectId: string, input: RuleInput, userId: string, role: UserRole) {
+    await RuleService.requireAdmin(role);
     await ProjectService.requireProjectRole(projectId, userId, role, "manager");
     if ((await prisma.projectRule.count({ where: { projectId } })) >= MAX_RULES_PER_PROJECT) {
       throw new ApiError(400, `A project can have up to ${MAX_RULES_PER_PROJECT} rules. Remove one you no longer need first.`);
@@ -42,6 +48,7 @@ export class RuleService {
   }
 
   static async update(projectId: string, ruleId: string, input: RuleInput, userId: string, role: UserRole) {
+    await RuleService.requireAdmin(role);
     await ProjectService.requireProjectRole(projectId, userId, role, "manager");
     await this.mustExist(projectId, ruleId);
     await this.assertRefsInProject(projectId, input);
@@ -51,6 +58,7 @@ export class RuleService {
   }
 
   static async setEnabled(projectId: string, ruleId: string, enabled: boolean, userId: string, role: UserRole) {
+    await RuleService.requireAdmin(role);
     await ProjectService.requireProjectRole(projectId, userId, role, "manager");
     await this.mustExist(projectId, ruleId);
     const rule = await prisma.projectRule.update({ where: { id: ruleId }, data: { enabled } });
@@ -59,6 +67,7 @@ export class RuleService {
   }
 
   static async remove(projectId: string, ruleId: string, userId: string, role: UserRole) {
+    await RuleService.requireAdmin(role);
     await ProjectService.requireProjectRole(projectId, userId, role, "manager", { closedOk: true });
     await this.mustExist(projectId, ruleId);
     await prisma.projectRule.delete({ where: { id: ruleId } });
