@@ -1,3 +1,4 @@
+import { StageHistoryService } from "../services/stage-history.service.js";
 import { Router } from "express";
 import { USER_ROLE } from "../constants/enums.js";
 import { ProjectController } from "../controllers/project.controller.js";
@@ -34,6 +35,10 @@ projectRouter.post("/:projectId/members", validate(assignMembersSchema), asyncHa
 projectRouter.patch("/:projectId/members/:userId", validate(memberRoleSchema), asyncHandler(ProjectController.setMemberRole));
 projectRouter.delete("/:projectId/members/:userId", asyncHandler(ProjectController.removeMember));
 // The board's own columns: anyone on the project reads them; the service lets only its managers change them
+// How long each task spent in each stage, in order (the Timeline tab's Stages view)
+projectRouter.get("/:projectId/stage-history", asyncHandler(async (req, res) => {
+  res.json(await StageHistoryService.forProject(req.params.projectId, req.user!.userId, req.user!.role));
+}));
 projectRouter.get("/:projectId/columns", asyncHandler(async (req, res) => {
   res.json(await ProjectService.getColumns(req.params.projectId, req.user!.userId, req.user!.role as any));
 }));

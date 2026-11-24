@@ -290,7 +290,8 @@ export class TaskService {
         description: `Created task ${task.title}`,
         userId: actorUserId,
         projectId: task.projectId,
-        taskId: task.id
+        taskId: task.id,
+        metadata: { status: task.status } // the first stage, for the Timeline's Stages view
       }),
       this.announceNewTask(task, input.assigneeIds ?? []),
       this.getById(task.id)
@@ -583,7 +584,8 @@ export class TaskService {
       description: `Created the next one of repeating task ${t.title}`,
       userId: actorUserId,
       projectId: t.projectId,
-      taskId: next.id
+      taskId: next.id,
+      metadata: { status: next.status }
     });
     await this.announceNewTask(next, t.assignees.map((a) => a.id), { repeatDue: nextDue });
     // Rules see the new copy like any new task, unless a rule made it (a rule can't set off rules)
