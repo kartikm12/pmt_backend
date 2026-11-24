@@ -479,7 +479,7 @@ export class AssetService {
           eventType: "CREATED",
           performedById: user.id,
           title: "Asset Registered",
-          description: `Asset registered with Tag ${assetTag} by ${user.role}`,
+          description: `Added as ${assetTag}`,
           metadata: { initialStatus }
         }
       });
@@ -808,7 +808,7 @@ export class AssetService {
           eventType: "RECEIPT_CONFIRMED",
           performedById: user.id,
           title: "Receipt Confirmed",
-          description: `Receipt confirmed by ${user.id}`,
+          description: "Confirmed they have it",
           metadata: { confirmedAt: new Date() }
         }
       });
@@ -894,7 +894,7 @@ export class AssetService {
           eventType: "RETURNED",
           performedById: user.id,
           title: "Asset Returned",
-          description: `Returned from ${asset.currentHolder?.fullName || "Employee"} (Disposition: ${input.returnDisposition})`,
+          description: `Returned by ${asset.currentHolder?.fullName || "the assignee"}, ${input.returnDisposition === "REPAIR" ? "sent to repair" : "back in stock"}`,
           metadata: {
             condition: input.returnCondition,
             remarks: input.returnRemarks,
@@ -1031,7 +1031,7 @@ export class AssetService {
           eventType: "REPAIR_COMPLETED",
           performedById: user.id,
           title: "Repair Completed",
-          description: `Repair completed. Condition: ${input.condition}. Disposition: ${input.disposition}`,
+          description: `Condition ${String(input.condition).toLowerCase()}, ${input.disposition === "ASSIGN" ? "assigned again" : "back in stock"}`,
           metadata: {
             condition: input.condition,
             disposition: input.disposition,
@@ -1107,7 +1107,7 @@ export class AssetService {
           eventType: "MARKED_LOST",
           performedById: user.id,
           title: "Asset Marked Lost",
-          description: remarks || "Asset reported lost",
+          description: remarks || "Reported lost",
           metadata: { remarks }
         }
       });
@@ -1166,7 +1166,7 @@ export class AssetService {
           eventType: "RETIRED",
           performedById: user.id,
           title: "Asset Retired",
-          description: remarks || "Asset formally retired",
+          description: remarks || "No longer in use",
           metadata: { remarks }
         }
       });
@@ -1211,7 +1211,7 @@ export class AssetService {
           eventType: "DELETED",
           performedById: user.id,
           title: "Asset Moved to Recently Deleted",
-          description: "Asset moved to trash (retained for 30 days)"
+          description: "Kept in Recently deleted for 30 days"
         }
       });
     });
@@ -1251,7 +1251,7 @@ export class AssetService {
           eventType: "RESTORED",
           performedById: user.id,
           title: "Asset Restored",
-          description: "Asset restored from Recently Deleted"
+          description: "Brought back from Recently deleted"
         }
       });
     });
